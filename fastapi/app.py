@@ -21,3 +21,20 @@ def ask(prompt: str):
     )
     r.raise_for_status()
     return Response(content=r.text, media_type="application/json")
+    except requests.RequestException as e:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "could_not_reach_ollama",
+                "detail": str(e),
+                "base_url": OLLAMA_BASE_URL,
+            },
+        )
+    except ValueError:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "invalid_ollama_response",
+                "base_url": OLLAMA_BASE_URL,
+            },
+        )
