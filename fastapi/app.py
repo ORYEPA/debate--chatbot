@@ -21,7 +21,7 @@ def ask(prompt: str):
         r = requests.post(
             f"{OLLAMA_BASE_URL}/api/generate",
             json={"prompt": prompt, "stream": False, "model": "llama3"},
-            timeout=60,
+            timeout=240,
         )
         return JSONResponse(status_code=r.status_code, content=r.json())
     except requests.RequestException as e:
