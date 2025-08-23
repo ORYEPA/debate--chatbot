@@ -50,7 +50,7 @@ def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, prof
     payload = {
         "model": MODEL_NAME,
         "prompt": prompt,
-        "stream": False,
+        "stream": True,
         "keep_alive": KEEP_ALIVE,
         "options": options,
     }
