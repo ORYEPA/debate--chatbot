@@ -32,6 +32,7 @@ def configure_docs(app):
             routes=app.routes,
         )
         openapi_schema["openapi"] = "3.0.3"
+        openapi_schema["servers"] = [{"url": "/"}]
         app.openapi_schema = openapi_schema
         return app.openapi_schema
 
