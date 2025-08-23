@@ -1,6 +1,6 @@
 set -e
 
-PRIMARY="${MODEL_NAME:-llama3.2:3b}"
+PRIMARY="${MODEL_NAME:-llama3.2:1b}"
 CANDIDATES="$PRIMARY,llama3.2:1b,llama3.1:8b"
 
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:11434}"

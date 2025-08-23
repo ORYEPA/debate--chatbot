@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from profiles import PROFILE
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:3b")
+MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:1b")
 PROFILE_DEFAULT = os.getenv("PROFILE_DEFAULT", "smart_shy")
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "100"))
 REPLY_CHAR_LIMIT = int(os.getenv("REPLY_CHAR_LIMIT", "900"))

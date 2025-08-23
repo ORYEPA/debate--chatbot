@@ -2,40 +2,34 @@ import os
 import re
 import redis
 
-def _norm_ollama(u: str) -> str:
-    """Asegura esquema http/https y quita '/' final."""
+def _ensure_url(u: str, default: str) -> str:
+    """
+    Si la var no viene, usa 'default'.
+    Si viene sin esquema, se le antepone 'http://'.
+    Si viene con http/https, se respeta tal cual.
+    """
     if not u:
-        return "http://localhost:11434"
+        return default
     u = u.strip().rstrip("/")
-    if not u.startswith(("http://", "https://")):
-        u = "https://" + u
-    return u
-
-def _norm_redis(url_env: str, tls_env: str) -> str:
-    """Elige TLS si está, acepta host interno sin esquema y cae a localhost."""
-    u = (tls_env or url_env or "").strip()
-    if not u:
-        return "redis://localhost:6379/0"
-    if u.startswith(("redis://", "rediss://")):
+    if u.startswith(("http://", "https://")):
         return u
-    if u.endswith(".railway.internal"):
-        return f"redis://{u}:6379/0"
-    return u  
+    return "http://" + u
 
-OLLAMA_BASE_URL = _norm_ollama(os.getenv("OLLAMA_BASE_URL", ""))
-MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:3b")
+OLLAMA_BASE_URL = _ensure_url(os.getenv("OLLAMA_BASE_URL"), "")
+
+MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:1b")
 PROFILE_DEFAULT = os.getenv("PROFILE_DEFAULT", "smart_shy")
-HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "100"))
+
+HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "45"))
 REPLY_CHAR_LIMIT = int(os.getenv("REPLY_CHAR_LIMIT", "900"))
 LLM_MOCK = os.getenv("LLM_MOCK", "0") == "1"
 DOCS_VERSION = os.getenv("DOCS_VERSION", "dev")
 MAX_HISTORY_PAIRS = int(os.getenv("MAX_HISTORY_PAIRS", "3"))
 KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
-NUM_PREDICT_CAP = int(os.getenv("NUM_PREDICT_CAP", "200"))  
-NUM_CTX         = int(os.getenv("NUM_CTX", "1024"))        
-HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "45"))  
+NUM_PREDICT_CAP = int(os.getenv("NUM_PREDICT_CAP", "200"))
+NUM_CTX = int(os.getenv("NUM_CTX", "1024"))
 
-REDIS_URL = _norm_redis(os.getenv("REDIS_URL", ""), os.getenv("REDIS_TLS_URL", ""))
+REDIS_URL = os.getenv("REDIS_TLS_URL") or os.getenv("REDIS_URL") or "redis://localhost:6379/0"
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 PROFILE_CMD = re.compile(r"^\s*/profile\s+([a-zA-Z0-9_\-]+)\s*", re.IGNORECASE)
