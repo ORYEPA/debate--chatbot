@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -24,6 +23,13 @@ def create_app() -> FastAPI:
         expose_headers=["*"],
         max_age=600,
     )
+    
+    @app.on_event("startup")
+    def _warmup():
+        try:
+            requests.get(f"{OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=3)
+        except Exception:
+            pass
 
     configure_docs(app)
 

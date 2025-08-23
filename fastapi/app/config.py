@@ -31,6 +31,9 @@ LLM_MOCK = os.getenv("LLM_MOCK", "0") == "1"
 DOCS_VERSION = os.getenv("DOCS_VERSION", "dev")
 MAX_HISTORY_PAIRS = int(os.getenv("MAX_HISTORY_PAIRS", "3"))
 KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
+NUM_PREDICT_CAP = int(os.getenv("NUM_PREDICT_CAP", "200"))  
+NUM_CTX         = int(os.getenv("NUM_CTX", "1024"))        
+HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "45"))  
 
 REDIS_URL = _norm_redis(os.getenv("REDIS_URL", ""), os.getenv("REDIS_TLS_URL", ""))
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
