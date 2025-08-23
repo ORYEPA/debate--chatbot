@@ -21,13 +21,13 @@ MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:1b")
 PROFILE_DEFAULT = os.getenv("PROFILE_DEFAULT", "smart_shy")
 
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "45"))
-REPLY_CHAR_LIMIT = int(os.getenv("REPLY_CHAR_LIMIT", "1500"))
-NUM_PREDICT_CAP  = int(os.getenv("NUM_PREDICT_CAP", "260"))
+REPLY_CHAR_LIMIT = int(os.getenv("REPLY_CHAR_LIMIT", "550"))
+NUM_PREDICT_CAP  = int(os.getenv("NUM_PREDICT_CAP", "200"))
 LLM_MOCK = os.getenv("LLM_MOCK", "0") == "1"
 DOCS_VERSION = os.getenv("DOCS_VERSION", "dev")
 MAX_HISTORY_PAIRS = int(os.getenv("MAX_HISTORY_PAIRS", "3"))
 KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
-NUM_CTX = int(os.getenv("NUM_CTX", "1024"))
+NUM_CTX = int(os.getenv("NUM_CTX", "512"))
 STRICT_ALIGN = os.getenv("STRICT_ALIGN", "1") == "1"  
 REVISION_PASS = os.getenv("REVISION_PASS", "0") == "1"
 
