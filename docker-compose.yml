@@ -12,6 +12,9 @@ services:
       - ollama_models:/root/.ollama
     networks:
       - chatbot-net
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - MODEL_NAME=llama3.2:3b
     restart: unless-stopped
 
   web:
@@ -19,8 +22,16 @@ services:
     container_name: debate-api
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
+      - REDIS_URL=redis://redis:6379/0          
+      - PROFILE_DEFAULT=smart_shy               
+      - MODEL_NAME=llama3.2:3b 
+      - DOCS_VERSION=${DOCS_VERSION:-dev}     
+      #- OLLAMA_NUM_THREAD=8        
+      #- OLLAMA_NUM_CTX=2048   
+      - OLLAMA_KEEP_ALIVE=10m    
     depends_on:
       - ollama
+      - redis                                   
     ports:
       - "8000:8000"
     volumes:
@@ -28,10 +39,27 @@ services:
     networks:
       - chatbot-net
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server","--appendonly","yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - chatbot-net                              
+
 networks:
   chatbot-net:
     driver: bridge
 
 volumes:
   ollama_models:
+    driver: local
+  redis_data:                                    
     driver: local
