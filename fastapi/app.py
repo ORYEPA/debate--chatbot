@@ -317,6 +317,12 @@ def revise_if_needed(reply: str, system_prompt: str, history: List[ChatMessage],
     fixed = call_llm(correction_prompt, history, user_msg, profile, num_predict_override=200)
     return fixed
 
+SENTINEL_EMPTY_CIDS = {"", "string", "null", "undefined", "None", "N/A", "na", "0"}
+def _normalize_cid(cid: Optional[str]) -> Optional[str]:
+    if cid is None: return None
+    s = str(cid).strip()
+    return None if s in SENTINEL_EMPTY_CIDS else s
+
 app = FastAPI(title="Debate Chatbot", docs_url=None, redoc_url=None, openapi_url="/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/_static", StaticFiles(directory=swagger_ui_3_path), name="swagger_static")
@@ -401,7 +407,9 @@ def ask(req: AskRequest):
 
     requested_profile, user_text = extract_profile_cmd(req.message)
 
-    if not req.conversation_id:
+    normalized_cid = _normalize_cid(req.conversation_id)
+
+    if not normalized_cid:
         topic, user_side = classify_topic_and_user_side_via_llm(user_text)
         bot_side = bot_side_for(topic, user_side)
         profile_id = requested_profile or PROFILE_DEFAULT
@@ -409,7 +417,7 @@ def ask(req: AskRequest):
         conv = {"meta":{"topic":topic,"side":bot_side,"profile_id":profile_id,"user_side":user_side,"user_aligned":False},"messages":[]}
         redis_client.set(_conv_key(cid), json.dumps(conv))
     else:
-        cid = req.conversation_id
+        cid = normalized_cid
         raw = redis_client.get(_conv_key(cid))
         if not raw: raise HTTPException(404, "conversation_id not found")
         conv = json.loads(raw)
