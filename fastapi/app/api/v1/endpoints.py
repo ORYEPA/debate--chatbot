@@ -1,4 +1,6 @@
 import time
+import requests
+
 from fastapi import APIRouter, HTTPException
 from profiles import PROFILE  
 from app.config import (
@@ -20,20 +22,32 @@ from app.services.guards import (
     verify_alignment_via_llm, force_rewrite_for_alignment,
     revise_if_needed, maybe_append_invite_on_agreement
 )
+from app.config import OLLAMA_BASE_URL
 
 router = APIRouter()
 
 @router.get("/health")
 def health():
+    from app.config import redis_client
     try:
         ok_redis = bool(redis_client.ping())
     except Exception:
         ok_redis = False
+
+    ollama_ok, ollama_err = False, None
+    try:
+        r = requests.get(f"{OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=3)
+        r.raise_for_status()
+        ollama_ok = True
+    except Exception as e:
+        ollama_err = str(e)
+
     return {
-        "status": "ok",
+        "status": "ok" if (ok_redis and ollama_ok) else "degraded",
         "redis": ok_redis,
-        "profile_default": True,
-        "docs_version": DOCS_VERSION,
+        "ollama_base_url": OLLAMA_BASE_URL,
+        "ollama_reachable": ollama_ok,
+        "ollama_error": ollama_err,
     }
 
 @router.get("/commands", response_model=CommandsResponse)

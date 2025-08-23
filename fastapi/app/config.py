@@ -2,7 +2,27 @@ import os
 import re
 import redis
 
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+def _norm_ollama(u: str) -> str:
+    """Asegura esquema http/https y quita '/' final."""
+    if not u:
+        return "http://localhost:11434"
+    u = u.strip().rstrip("/")
+    if not u.startswith(("http://", "https://")):
+        u = "https://" + u
+    return u
+
+def _norm_redis(url_env: str, tls_env: str) -> str:
+    """Elige TLS si está, acepta host interno sin esquema y cae a localhost."""
+    u = (tls_env or url_env or "").strip()
+    if not u:
+        return "redis://localhost:6379/0"
+    if u.startswith(("redis://", "rediss://")):
+        return u
+    if u.endswith(".railway.internal"):
+        return f"redis://{u}:6379/0"
+    return u  
+
+OLLAMA_BASE_URL = _norm_ollama(os.getenv("OLLAMA_BASE_URL", ""))
 MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:3b")
 PROFILE_DEFAULT = os.getenv("PROFILE_DEFAULT", "smart_shy")
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "100"))
@@ -12,10 +32,10 @@ DOCS_VERSION = os.getenv("DOCS_VERSION", "dev")
 MAX_HISTORY_PAIRS = int(os.getenv("MAX_HISTORY_PAIRS", "3"))
 KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 
-redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True)
+REDIS_URL = _norm_redis(os.getenv("REDIS_URL", ""), os.getenv("REDIS_TLS_URL", ""))
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 PROFILE_CMD = re.compile(r"^\s*/profile\s+([a-zA-Z0-9_\-]+)\s*", re.IGNORECASE)
-
 SENTINEL_EMPTY_CIDS = {"", "string", "null", "undefined", "None", "N/A", "na", "0"}
 
 UNIVERSAL_RULES = (
