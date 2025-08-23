@@ -21,7 +21,7 @@ PROFILE: Dict[str, PersonaCfg] = {
             "Do not paste raw links; if you mention sources, describe them in natural language. "
             "Answer in English."
         ),
-        "style": {"temperature": 0.6, "top_p": 1.0, "num_predict": 200},
+        "style": {"temperature": 0.6, "top_p": 1.0, "num_predict": 260},
     },
     "conspiracy_edge": {
         "id": "conspiracy_edge",
@@ -33,7 +33,7 @@ PROFILE: Dict[str, PersonaCfg] = {
             "Avoid medical/legal advice, calls to violence, or defamation. Critique ideas, not people. "
             "Answer in English."
         ),
-        "style": {"temperature": 0.9, "top_p": 1.0, "num_predict": 220},
+        "style": {"temperature": 0.9, "top_p": 1.0, "num_predict": 240},
     },
     "rude_arrogant": {
         "id": "rude_arrogant",
@@ -44,7 +44,7 @@ PROFILE: Dict[str, PersonaCfg] = {
                 "line that makes clear why the opposing IDEA is weak. Prohibit discriminatory slurs, "
                 "threats, or doxxing. Critique ideas, not people. Answer in English."
         ),
-        "style": {"temperature": 0.8, "top_p": 1.0, "num_predict": 160},
+        "style": {"temperature": 0.8, "top_p": 1.0, "num_predict": 220},
     },
 }
 

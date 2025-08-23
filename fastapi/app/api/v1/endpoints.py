@@ -1,10 +1,13 @@
 import time
 import requests
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from profiles import PROFILE  
+from fastapi import APIRouter, HTTPException, Query
+
+from profiles import PROFILE
 from app.config import (
-    DOCS_VERSION, DEFAULT_TOPIC, DEFAULT_SIDE, redis_client
+    DOCS_VERSION, DEFAULT_TOPIC, DEFAULT_SIDE, OLLAMA_BASE_URL,
+    redis_client, REVISION_PASS, STRICT_ALIGN
 )
 from app.models import (
     CommandsResponse, Command, ProfilesResponse, ProfileInfo,
@@ -17,18 +20,21 @@ from app.services.conversation import (
     bot_side_for, stance_type_from, detect_user_agreement
 )
 from app.services.classifier import classify_topic_and_user_side_via_llm
-from app.services.llm import build_system_prompt, call_llm
+from app.services.llm import (
+    build_system_prompt, call_llm,
+    strip_stance_prefix, minimal_argument,
+    ensure_non_redundant_reply,  
+)
 from app.services.guards import (
     verify_alignment_via_llm, force_rewrite_for_alignment,
     revise_if_needed, maybe_append_invite_on_agreement
 )
-from app.config import OLLAMA_BASE_URL
 
 router = APIRouter()
 
+
 @router.get("/health")
 def health():
-    from app.config import redis_client
     try:
         ok_redis = bool(redis_client.ping())
     except Exception:
@@ -50,26 +56,30 @@ def health():
         "ollama_error": ollama_err,
     }
 
+
 @router.get("/commands", response_model=CommandsResponse)
 def list_commands():
     return CommandsResponse(commands=[
         Command(name="List commands", method="GET", path="/commands", description="Lista de endpoints disponibles con ejemplos"),
-        Command(name="Health", method="GET", path="/health", description="Estado de la API y Redis"),
+        Command(name="Health", method="GET", path="/health", description="Estado de la API, Ollama y Redis"),
         Command(name="List profiles", method="GET", path="/profiles", description="Perfiles disponibles (id y nombre)"),
         Command(name="Set profile (create conversation)", method="POST", path="/conversations/profile",
                 description="Crea una nueva conversación con el perfil indicado (tema/side por defecto del reto)",
                 body_example={"profile_id": "rude_arrogant"}),
         Command(name="Chat (ask)", method="POST", path="/ask",
-                description="Si no envías conversation_id (o envías 'string'), el bot crea nueva conversa con perfil por defecto. Devuelve latency_ms y los últimos 5 mensajes."),
+                description="Si no envías conversation_id (o envías 'string'), crea nueva conversación con perfil por defecto. Devuelve latency_ms y los últimos 5 mensajes."),
         Command(name="Conversation meta", method="GET", path="/conversations/{conversation_id}/meta",
                 description="Devuelve profile_id, profile_name, topic y side (lado de la IA)"),
-        Command(name="Last 5 messages (total)", method="GET", path="/conversations/{conversation_id}/history5",
-                description="Últimos 5 mensajes totales, orden cronológico"),
+        Command(name="History", method="GET", path="/conversations/{conversation_id}/history5",
+                description="Devuelve últimos N mensajes si pasas ?limit=N; si omites limit, devuelve TODO el historial.",
+                query_example={"limit": 10}),
     ])
+
 
 @router.get("/profiles", response_model=ProfilesResponse)
 def get_profiles():
     return ProfilesResponse(profiles=[ProfileInfo(id=p["id"], name=p["name"]) for p in PROFILE.values()])
+
 
 @router.post("/conversations/profile", response_model=CreateProfileResponse)
 def create_conversation_with_profile(req: CreateProfileRequest):
@@ -81,12 +91,14 @@ def create_conversation_with_profile(req: CreateProfileRequest):
             "topic": DEFAULT_TOPIC,
             "side": DEFAULT_SIDE,
             "profile_id": req.profile_id,
-            "user_side": "negative" if DEFAULT_SIDE.startswith("Affirmative") else "affirmative"
+            "user_side": "negative" if DEFAULT_SIDE.startswith("Affirmative") else "affirmative",
+            "user_aligned": False,
         },
         "messages": [],
     }
     save_conversation(cid, conv)
     return CreateProfileResponse(ok=True, conversation_id=cid, profile_id=req.profile_id)
+
 
 @router.get("/conversations/{conversation_id}/meta", response_model=ConversationMetaResponse)
 def get_conversation_meta(conversation_id: str):
@@ -104,13 +116,20 @@ def get_conversation_meta(conversation_id: str):
         side=meta.get("side", DEFAULT_SIDE),
     )
 
+
 @router.get("/conversations/{conversation_id}/history5", response_model=HistoryResponse)
-def get_history_last5(conversation_id: str):
+def get_history(conversation_id: str, limit: Optional[int] = Query(None, ge=1, le=1000)):
+    """
+    Si 'limit' viene vacío -> devuelve TODO el historial.
+    Si 'limit' viene -> devuelve los últimos 'limit' mensajes, en orden cronológico.
+    """
     conv = get_conversation(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="conversation_id not found")
     history = [ChatMessage(**m) for m in conv.get("messages", [])]
-    return HistoryResponse(conversation_id=conversation_id, message=last_n(history, n=5))
+    out = history if limit is None else history[-limit:]
+    return HistoryResponse(conversation_id=conversation_id, message=out)
+
 
 @router.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
@@ -120,7 +139,6 @@ def ask(req: AskRequest):
     normalized_cid = normalize_cid(req.conversation_id)
 
     if not normalized_cid:
-        from profiles import PROFILE  
         topic, user_side = classify_topic_and_user_side_via_llm(user_text)
         bot_side = bot_side_for(topic, user_side)
         profile_id = requested_profile or PROFILE.get("smart_shy", {}).get("id", "smart_shy")
@@ -141,25 +159,37 @@ def ask(req: AskRequest):
         conv = get_conversation(cid)
         if not conv:
             raise HTTPException(status_code=404, detail="conversation_id not found")
+
         if requested_profile:
             conv["meta"]["profile_id"] = requested_profile
+
         if not conv.get("messages"):
             topic, user_side = classify_topic_and_user_side_via_llm(user_text)
-            conv["meta"].update({"topic": topic, "side": bot_side_for(topic, user_side), "user_side": user_side, "user_aligned": False})
+            conv["meta"].update({
+                "topic": topic,
+                "side": bot_side_for(topic, user_side),
+                "user_side": user_side,
+                "user_aligned": False
+            })
         else:
             new_topic_req = topic_change_requested(user_text)
             if new_topic_req is not None and new_topic_req:
                 inferred_topic, inferred_user_side = classify_topic_and_user_side_via_llm(user_text)
                 topic = inferred_topic or new_topic_req
-                conv["meta"].update({"topic": topic, "side": bot_side_for(topic, inferred_user_side),
-                                     "user_side": inferred_user_side, "user_aligned": False})
+                conv["meta"].update({
+                    "topic": topic,
+                    "side": bot_side_for(topic, inferred_user_side),
+                    "user_side": inferred_user_side,
+                    "user_aligned": False
+                })
         save_conversation(cid, conv)
 
-    
-    from profiles import PROFILE  
-    topic = conv["meta"]["topic"]; bot_side = conv["meta"]["side"]
-    profile_id = conv["meta"]["profile_id"]; profile = PROFILE[profile_id]
-    stance_type = stance_type_from(bot_side)
+    meta = conv["meta"]
+    topic = meta["topic"]
+    bot_side = meta["side"]
+    profile_id = meta["profile_id"]
+    profile = PROFILE[profile_id]
+    stance_type = stance_type_from(bot_side)  
 
     history = [ChatMessage(**m) for m in conv.get("messages", [])]
 
@@ -170,15 +200,32 @@ def ask(req: AskRequest):
     user_text = user_text[:800]
     history.append(ChatMessage(role="user", message=user_text))
 
-    from app.services.llm import build_system_prompt, call_llm
     sys_prompt = build_system_prompt(profile, topic, bot_side)
     bot_reply = call_llm(sys_prompt, history, user_text, profile)
 
-    from app.services.guards import revise_if_needed, verify_alignment_via_llm, force_rewrite_for_alignment, maybe_append_invite_on_agreement
-    bot_reply = revise_if_needed(bot_reply, sys_prompt, history, user_text, profile, topic)
-    aligned, _ = verify_alignment_via_llm(topic, stance_type, bot_reply)
-    if not aligned:
-        bot_reply = force_rewrite_for_alignment(sys_prompt, history, user_text, profile, topic, stance_type)
+    if REVISION_PASS:
+        bot_reply = revise_if_needed(bot_reply, sys_prompt, history, user_text, profile, topic)
+    if STRICT_ALIGN:
+        is_aligned, _ = verify_alignment_via_llm(topic, stance_type, bot_reply)
+        if not is_aligned:
+            bot_reply = force_rewrite_for_alignment(sys_prompt, history, user_text, profile, topic, stance_type)
+
+    bot_reply = strip_stance_prefix(bot_reply)
+    if len(bot_reply.strip()) < 80:
+        bot_reply = minimal_argument(
+            stance_type, 
+            topic,
+            user_msg=user_tex,
+        )
+
+    bot_reply = ensure_non_redundant_reply(
+        sys_prompt=sys_prompt,
+        history=history,
+        user_msg=user_text,
+        profile=profile,
+        topic=topic,
+        draft_reply=bot_reply,
+    )
 
     if conv["meta"].get("user_aligned"):
         bot_reply = maybe_append_invite_on_agreement(bot_reply)
@@ -189,4 +236,9 @@ def ask(req: AskRequest):
 
     last5 = last_n([ChatMessage(**m) for m in conv["messages"]], n=5)
     latency_ms = int((time.time() - start) * 1000)
-    return AskResponse(conversation_id=cid, message=last5, latency_ms=latency_ms)
+    return AskResponse(
+        conversation_id=cid,
+        message=last5,
+        latency_ms=latency_ms,
+        stance=stance_type,
+    )

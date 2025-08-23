@@ -13,6 +13,7 @@ class AskResponse(BaseModel):
     conversation_id: str
     message: List[ChatMessage]     
     latency_ms: int
+    stance: str
 
 class Command(BaseModel):
     name: str
