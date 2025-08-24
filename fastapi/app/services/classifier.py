@@ -1,89 +1,72 @@
-import json
-import re
-import requests
+import json, re, requests
 from typing import Tuple
+
 from app.config import (
-    MODEL_NAME, OLLAMA_BASE_URL, HTTP_TIMEOUT_SECONDS, KEEP_ALIVE, DEFAULT_TOPIC,
-    LLM_MOCK
+    OLLAMA_BASE_URL, MODEL_NAME, HTTP_TIMEOUT_SECONDS, KEEP_ALIVE
 )
-from app.services.conversation import clean_topic
 
-_NEG_PATTERNS = [
-    r"\bis not\b", r"\bare not\b", r"\bisn't\b", r"\baren't\b",
-    r"\bno es\b", r"\bno son\b", r"\bno está\b", r"\bno esta\b",
-    r"\bnot\b", r"\bno\b"
-]
+_LEAD_STRIP = re.compile(
+    r"^\s*(?:i\s*(?:think|believe)|creo\s+que|pienso\s+que|considero\s+que|it'?s|es)\s+", re.I)
+_NEG_PAT = re.compile(r"\b(?:don'?t|do\s+not|isn'?t|aren'?t|no|not|nunca|jam[aá]s|en\s+contra|against|oppose|disagree|incorrect|false|falso)\b", re.I)
 
-def _has_negation(s: str) -> bool:
-    s_low = " " + (s or "").lower() + " "
-    return any(re.search(p, s_low) for p in _NEG_PATTERNS)
+def _clean_topic(text: str) -> str:
+    t = (text or "").strip()
+    t = _LEAD_STRIP.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:160] if len(t) > 160 else t
 
-def _to_positive_canonical(s: str) -> str:
-    s2 = " " + (s or "") + " "
-    replacements = [
-        (r"\bis\s+not\s+\b", " is "),
-        (r"\bare\s+not\s+\b", " are "),
-        (r"\bisn'?t\s+\b", " is "),
-        (r"\baren'?t\s+\b", " are "),
-        (r"\bno\s+es\s+\b", " es "),
-        (r"\bno\s+son\s+\b", " son "),
-        (r"\bno\s+esta\s+\b", " esta "),
-        (r"\bno\s+está\s+\b", " está "),
-        (r"\bnot\s+\b", " "),
-        (r"\bno\s+\b", " "),
+def _to_positive_proposition(t: str) -> str:
+    s = " " + (t or "") + " "
+    repl = [
+        (r"\bis\s+not\s+", " is "),
+        (r"\bare\s+not\s+", " are "),
+        (r"\bisn'?t\s+", " is "),
+        (r"\baren'?t\s+", " are "),
+        (r"\bdo\s+not\s+", " "),
+        (r"\bdon'?t\s+", " "),
+        (r"\bno\s+", " "),
+        (r"\bnot\s+", " "),
+        (r"\bno\s+es\s+", " es "),
+        (r"\bno\s+son\s+", " son "),
     ]
-    for pat, rep in replacements:
-        s2 = re.sub(pat, rep, s2, flags=re.IGNORECASE)
-    s2 = re.sub(r"\s+", " ", s2).strip()
-    return s2
+    for pat, rep in repl:
+        s = re.sub(pat, rep, s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
-def classify_topic_and_user_side_via_llm(user_text: str) -> Tuple[str, str]:
-    """
-    Devuelve (topic_positivo, user_side).
-    user_side ∈ {'affirmative','negative'}
-    """
-    if LLM_MOCK:
-        txt = clean_topic(user_text) or DEFAULT_TOPIC
-        user_side = "negative" if (" not " in (" "+user_text.lower()+" ") or "en contra" in user_text.lower()) else "affirmative"
-        if _has_negation(txt):
-            txt = _to_positive_canonical(txt)
-            user_side = "affirmative" if user_side == "negative" else "negative"
-        return txt or DEFAULT_TOPIC, user_side
+def _heuristic_user_side(user_text: str) -> str:
+    """Regla determinista y robusta: si hay negación clara -> 'negative', de lo contrario 'affirmative'."""
+    return "negative" if _NEG_PAT.search(user_text or "") else "affirmative"
 
-    instruction = (
-        "You are a stance classifier. Produce ONLY a strict JSON object with two fields:\n"
-        '{ "topic": "<concise positive proposition>", "user_side": "affirmative" | "negative" }\n'
-        "- 'topic' MUST be a short POSITIVE/CANONICAL proposition WITHOUT NEGATIONS.\n"
-        "  Examples:\n"
-        "  User: 'I don't believe the moon is made of cheese' -> topic: 'the moon is made of cheese', user_side: 'negative'\n"
-        "  User: 'Estoy en contra de legalizar X' -> topic: 'legalizar X', user_side: 'negative'\n"
-        "  User: 'I support universal basic income' -> topic: 'universal basic income should be implemented', user_side: 'affirmative'\n"
-        "- 'user_side' is relative to THAT positive proposition.\n"
-        "No explanations. No extra text. JSON only."
+def _llm_canonical_topic(user_text: str) -> str:
+    """Opcional: pedir al LLM SOLO el tema en forma afirmativa; si falla, usar heurística."""
+    instr = (
+        "Return ONLY a short positive proposition (no negation, no stance, no extra text). "
+        "Example: 'I don't believe cats are better than dogs' -> 'cats are better than dogs'."
     )
     payload = {
         "model": MODEL_NAME,
-        "prompt": f"{instruction}\n\nUser message:\n{user_text}\n\nJSON:",
+        "prompt": f"{instr}\nUser: {user_text}\nProposition:",
         "stream": False, "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0.0, "top_p": 1.0, "num_predict": 200},
+        "options": {"temperature": 0.0, "top_p": 1.0, "num_predict": 48},
     }
     try:
         r = requests.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload, timeout=HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
-        raw = (r.json().get("response") or "").strip()
-        i, j = raw.find("{"), raw.rfind("}")
-        if i != -1 and j != -1:
-            jso = json.loads(raw[i:j+1])
-            topic = clean_topic(str(jso.get("topic","")).strip()) or DEFAULT_TOPIC
-            side  = str(jso.get("user_side","")).strip().lower()
-            if side not in ("affirmative","negative"): side = "affirmative"
-            if _has_negation(topic):
-                topic = _to_positive_canonical(topic) or topic
-                side = "affirmative" if side=="negative" else "negative"
-            return topic, side
+        txt = (r.json().get("response") or "").strip()
+        txt = txt.splitlines()[0].strip()
+        if txt:
+            return txt
     except Exception:
         pass
-    text = clean_topic(user_text) or DEFAULT_TOPIC
-    side = "negative" if _has_negation(text) else "affirmative"
-    if _has_negation(text): text = _to_positive_canonical(text)
-    return text or DEFAULT_TOPIC, side
+    base = _clean_topic(user_text)
+    return _to_positive_proposition(base) or base or "the claim"
+
+def classify_topic_and_user_side_via_llm(user_text: str) -> Tuple[str, str]:
+    """
+    1) Determina la postura del usuario con REGLA DETERMINISTA (no depende del LLM).
+    2) Obtiene el tema canónico afirmativo (intenta LLM; si falla, heurística).
+    """
+    user_side = _heuristic_user_side(user_text)
+    topic = _llm_canonical_topic(user_text)
+    return topic, user_side

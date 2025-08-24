@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from profiles import PROFILE
 from app.config import (
-    DOCS_VERSION, DEFAULT_TOPIC, DEFAULT_SIDE, OLLAMA_BASE_URL,
-    redis_client, REVISION_PASS, STRICT_ALIGN
+    DEFAULT_TOPIC, DEFAULT_SIDE, OLLAMA_BASE_URL,
+    redis_client, REVISION_PASS,
 )
 from app.models import (
     CommandsResponse, Command, ProfilesResponse, ProfileInfo,
@@ -15,7 +15,7 @@ from app.models import (
     HistoryResponse, AskRequest, AskResponse, ChatMessage
 )
 from app.services.conversation import (
-    new_cid, get_conversation, save_conversation, conv_key, last_n,
+    new_cid, get_conversation, save_conversation, last_n,
     extract_profile_cmd, normalize_cid, topic_change_requested,
     bot_side_for, stance_type_from, detect_user_agreement
 )
@@ -23,7 +23,7 @@ from app.services.classifier import classify_topic_and_user_side_via_llm
 from app.services.llm import (
     build_system_prompt, call_llm,
     strip_stance_prefix, minimal_argument,
-    ensure_non_redundant_reply,  
+    ensure_non_redundant_reply,
 )
 from app.services.guards import (
     verify_alignment_via_llm, force_rewrite_for_alignment,
@@ -92,6 +92,7 @@ def create_conversation_with_profile(req: CreateProfileRequest):
             "side": DEFAULT_SIDE,
             "profile_id": req.profile_id,
             "user_side": "negative" if DEFAULT_SIDE.startswith("Affirmative") else "affirmative",
+            "stance_type": stance_type_from(DEFAULT_SIDE),
             "user_aligned": False,
         },
         "messages": [],
@@ -141,12 +142,18 @@ def ask(req: AskRequest):
     if not normalized_cid:
         topic, user_side = classify_topic_and_user_side_via_llm(user_text)
         bot_side = bot_side_for(topic, user_side)
+        stance_type = "negative" if user_side == "affirmative" else "affirmative"
+
         profile_id = requested_profile or PROFILE.get("smart_shy", {}).get("id", "smart_shy")
         cid = new_cid()
         conv = {
             "meta": {
                 "topic": topic,
-                "side": bot_side,
+                "side": bot_side,                 
+                "stance_type": stance_type,      
+                "initial_topic": topic,
+                "initial_user_side": user_side,
+                "locked_side": True,
                 "profile_id": profile_id,
                 "user_side": user_side,
                 "user_aligned": False,
@@ -154,6 +161,7 @@ def ask(req: AskRequest):
             "messages": [],
         }
         save_conversation(cid, conv)
+
     else:
         cid = normalized_cid
         conv = get_conversation(cid)
@@ -165,31 +173,43 @@ def ask(req: AskRequest):
 
         if not conv.get("messages"):
             topic, user_side = classify_topic_and_user_side_via_llm(user_text)
+            bot_side = bot_side_for(topic, user_side)
+            stance_type = "negative" if user_side == "affirmative" else "affirmative"
             conv["meta"].update({
                 "topic": topic,
-                "side": bot_side_for(topic, user_side),
+                "side": bot_side,
+                "stance_type": stance_type,
+                "initial_topic": topic,
+                "initial_user_side": user_side,
+                "locked_side": True,
                 "user_side": user_side,
-                "user_aligned": False
+                "user_aligned": False,
             })
         else:
             new_topic_req = topic_change_requested(user_text)
             if new_topic_req is not None and new_topic_req:
                 inferred_topic, inferred_user_side = classify_topic_and_user_side_via_llm(user_text)
                 topic = inferred_topic or new_topic_req
+                bot_side = bot_side_for(topic, inferred_user_side)
+                stance_type = "negative" if inferred_user_side == "affirmative" else "affirmative"
                 conv["meta"].update({
                     "topic": topic,
-                    "side": bot_side_for(topic, inferred_user_side),
+                    "side": bot_side,
+                    "stance_type": stance_type,
+                    "initial_topic": topic,
+                    "initial_user_side": inferred_user_side,
+                    "locked_side": True,
                     "user_side": inferred_user_side,
-                    "user_aligned": False
+                    "user_aligned": False,
                 })
         save_conversation(cid, conv)
 
     meta = conv["meta"]
     topic = meta["topic"]
     bot_side = meta["side"]
+    stance_type = meta.get("stance_type") or stance_type_from(bot_side) 
     profile_id = meta["profile_id"]
     profile = PROFILE[profile_id]
-    stance_type = stance_type_from(bot_side)  
 
     history = [ChatMessage(**m) for m in conv.get("messages", [])]
 
@@ -205,18 +225,14 @@ def ask(req: AskRequest):
 
     if REVISION_PASS:
         bot_reply = revise_if_needed(bot_reply, sys_prompt, history, user_text, profile, topic)
-    if STRICT_ALIGN:
-        is_aligned, _ = verify_alignment_via_llm(topic, stance_type, bot_reply)
-        if not is_aligned:
-            bot_reply = force_rewrite_for_alignment(sys_prompt, history, user_text, profile, topic, stance_type)
+
+    aligned, _ = verify_alignment_via_llm(topic, stance_type, bot_reply)
+    if not aligned:
+        bot_reply = force_rewrite_for_alignment(sys_prompt, history, user_text, profile, topic, stance_type)
 
     bot_reply = strip_stance_prefix(bot_reply)
     if len(bot_reply.strip()) < 80:
-        bot_reply = minimal_argument(
-            stance_type, 
-            topic,
-            user_msg=user_tex,
-        )
+        bot_reply = minimal_argument(stance_type, topic)
 
     bot_reply = ensure_non_redundant_reply(
         sys_prompt=sys_prompt,
@@ -225,6 +241,8 @@ def ask(req: AskRequest):
         profile=profile,
         topic=topic,
         draft_reply=bot_reply,
+        jaccard_threshold=0.52,
+        prefix_threshold=0.45,
     )
 
     if conv["meta"].get("user_aligned"):
@@ -240,5 +258,5 @@ def ask(req: AskRequest):
         conversation_id=cid,
         message=last5,
         latency_ms=latency_ms,
-        stance=stance_type,
+        stance=stance_type,   
     )

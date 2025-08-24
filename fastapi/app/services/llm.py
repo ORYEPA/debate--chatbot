@@ -26,23 +26,27 @@ def sanitize_model_text(text: str) -> str:
         lines.append(ln)
     return "\n".join(lines).strip()
 
-STANCE_LINE_ANY_RE = re.compile(r"^\s*Stance\s*:\s*.*$", re.I)
-
-SECTION_HEAD_ANY_RE = re.compile(
-    r"^\s*(?:limited\s+)?(?:thesis|reason(?:s)?(?:\s+with.*)?|concession|challenge|rebuttal|counterpoint|evidence|user'?s?\s+concession)\s*:\s*",
+STANCE_HEADER_RE = re.compile(
+    r"^\s*(stance|posición|posicion|postura)\b[^\n:–—-]{0,40}[:\-–—]\s*",
     re.I
 )
-
-REASONS_COUNT_RE = re.compile(r"^\s*\d+\s*(?:reasons?|puntos|motivos)(?:\s+with.*)?\s*:\s*$", re.I)
-ENUM_BULLET_RE   = re.compile(r"^\s*(?:\d+[\)\.\:-]\s+|[-*]\s+)", re.I)
 
 def strip_stance_prefix(text: str) -> str:
     if not text:
         return text
     lines = text.splitlines()
-    if lines and STANCE_LINE_ANY_RE.match(lines[0]):
-        return "\n".join(lines[1:]).lstrip()
+    if lines and STANCE_HEADER_RE.search(lines[0]):
+        text = "\n".join(lines[1:]).lstrip()
+    text = re.sub(STANCE_HEADER_RE, "", text, count=1)
     return text
+
+SECTION_HEAD_ANY_RE = re.compile(
+    r"^\s*(?:limited\s+)?(?:thesis|reason(?:s)?(?:\s+with.*)?|concession|challenge|rebuttal|"
+    r"counterpoint|evidence|user'?s?\s+concession|evidences?)\s*:\s*",
+    re.I
+)
+REASONS_COUNT_RE = re.compile(r"^\s*\d+\s*(?:reasons?|puntos|motivos)(?:\s+with.*)?\s*:\s*$", re.I)
+ENUM_BULLET_RE   = re.compile(r"^\s*(?:\d+[\)\.\:-]\s+|[-*]\s+)", re.I)
 
 def remove_structure_labels(text: str) -> str:
     if not text:
@@ -57,8 +61,8 @@ def remove_structure_labels(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned
 
-def to_prose(text: str) -> str:
-    """Convierte a prosa en UN SOLO PÁRRAFO (sin viñetas ni saltos)."""
+def to_prose_single_paragraph(text: str) -> str:
+    """Convierte todo a UN SOLO PÁRRAFO (sin listas ni saltos)."""
     if not text:
         return text
     lines = []
@@ -67,13 +71,47 @@ def to_prose(text: str) -> str:
         lines.append(ln)
     s = " ".join(lines)                 
     s = remove_structure_labels(s)
-    s = re.sub(r"\s{2,}", " ", s)      
+    s = re.sub(r"\s{2,}", " ", s)       
     return s.strip()
+
+REFUSAL_OR_META_RE = re.compile(
+    r"(i\s+can(\'|no)t\s+assist|cannot\s+assist|i\s+can(\'|no)t\s+help|misinformation|"
+    r"credible\s+sources?|peer-?reviewed|look\s+up|journal|link|citation|source:|\bwho\b|\biarc\b|\bcdc\b)",
+    re.I
+)
+
+USER_ADDRESS_RE = re.compile(
+    r"\b(?:you\s+said|you\s+claim|you\s+think|as\s+you\s+said|your\s+argument|seg[uú]n\s+t[uú]|t[uú]\s+dijiste|"
+    r"dices\s+que|como\s+dijiste)\b",
+    re.I
+)
+
+def purge_refusal_and_meta(text: str) -> str:
+    if not text:
+        return text
+    kept = []
+    for ln in text.splitlines():
+        if REFUSAL_OR_META_RE.search(ln):
+            continue
+        kept.append(ln)
+    out = " ".join(kept).strip()
+    out = re.sub(r"\s{2,}", " ", out)
+    return out
+
+def remove_user_addressing(text: str) -> str:
+    """Elimina oraciones que citan o se dirigen al usuario (“you said…”, etc.)."""
+    if not text:
+        return text
+    sentences = re.split(r'(?<=[\.!\?])\s+', text.strip())
+    filtered = [s for s in sentences if not USER_ADDRESS_RE.search(s)]
+    out = " ".join(filtered).strip()
+    out = re.sub(r"\s{2,}", " ", out)
+    return out
 
 CLOSING_SENTENCE = "Reconsider your stance in light of these points."
 
 def ensure_closing_sentence(text: str) -> str:
-    """Asegura el cierre exacto en la MISMA línea (sin saltos adicionales)."""
+    """Asegura el cierre exacto en la MISMA línea (sin saltos extra)."""
     if not text:
         return CLOSING_SENTENCE
     norm = text.strip()
@@ -94,15 +132,13 @@ def smart_sentence_trim(text: str, hard_limit: int, grace: int) -> str:
     sp = window.rfind(" ")
     return (window[:sp].strip() if sp != -1 else window.strip())
 
-def minimal_argument(stance_type: str, topic: str, user_msg: str = "") -> str:
+def minimal_argument(stance_type: str, topic: str) -> str:
     verb = "support" if stance_type.lower().startswith("affirm") else "oppose"
-    rebut = f"You said “{user_msg.strip()}”, but that misses key evidence: " if user_msg else ""
     body = (
-        f"I {verb} the claim that {topic}. {rebut}"
-        "Across independent cohorts and practical tests, the signal is consistent: when exposure is quantified "
-        "and confounders are handled, the pattern doesn’t vanish; and comparative baselines with time-series checks "
-        "point the same way. Common objections depend on assumptions that fail under closer measurement, which makes "
-        "the opposite view harder to defend."
+        f"I {verb} the claim that {topic}. "
+        "Mechanistically, the effect follows from how exposure interacts with baseline susceptibility because changes in intake alter the load on the pathway that drives the outcome; "
+        "quantitatively, separating high- and low-exposure groups over a two-year window yields a persistent 10–20% shift after adjusting for age and activity—small but consistent, which is exactly what you’d expect if the underlying mechanism were real; "
+        "and a practical prediction follows: when exposure is reduced for a few months, the same markers regress toward baseline rather than drift randomly, which is difficult to reconcile with the opposite claim."
     )
     return ensure_closing_sentence(body)
 
@@ -134,36 +170,60 @@ def _last_bot_message(history: List[ChatMessage]) -> Optional[str]:
             return m.message or ""
     return None
 
-def _last_bot_excerpt(history: List[ChatMessage], limit: int = 320) -> str:
-    prev = _last_bot_message(history) or ""
-    prev = re.sub(r"\s+", " ", prev).strip()
-    return prev[:limit]
+def _last_two_bot_excerpts(history: List[ChatMessage], limit_each: int = 280) -> str:
+    ex = []
+    cnt = 0
+    for m in reversed(history):
+        if m.role == "bot":
+            s = re.sub(r"\s+", " ", (m.message or "")).strip()
+            ex.append(s[:limit_each]); cnt += 1
+            if cnt >= 2:
+                break
+    return "\n".join(reversed(ex))
+
+def _extract_ban_phrases(prev: str, max_phrases: int = 8, n: int = 5) -> list[str]:
+    toks = WORD_RE.findall(prev)
+    phrases = set()
+    for i in range(max(0, len(toks)-n+1)):
+        chunk = " ".join(toks[i:i+n])
+        if len(chunk) >= 28:
+            phrases.add(chunk.lower())
+        if len(phrases) >= max_phrases:
+            break
+    return list(phrases)
 
 def build_system_prompt(profile: Dict, topic: str, side: str) -> str:
     return (
         f"{profile['system']}\n\n{UNIVERSAL_RULES}\n"
         f"TOPIC: {topic}\nSIDE: {side}\n"
         "Debate rules (override):\n"
+        "- Your stance is LOCKED according to SIDE and cannot switch or hedge during this topic.\n"
         "- You are debating the OPPOSITE side of the user.\n"
-        "- Begin EXACTLY with: 'Stance: Affirmative' OR 'Stance: Negative' matching SIDE.\n"
-        "- Debate voice: in your FIRST clause, rebut the user's last sentence directly (use “because …”).\n"
-        "- Write in ONE SINGLE PARAGRAPH of persuasive PROSE (no line breaks, no lists, no labels, no meta like “User’s concession”).\n"
-        "- Include at least TWO concrete specifics (numbers, dates, named studies/missions/measurements) supporting your side.\n"
+        "- DO NOT write the word 'Stance' anywhere; your stance is handled separately by the system.\n"
+        "- DO NOT address or quote the user; write in assertive third person focused ONLY on defending your side.\n"
+        "- Write ONE SINGLE PARAGRAPH of persuasive PROSE (no line breaks, no lists, no labels, no meta).\n"
+        "- Provide internal specifics WITHOUT external citations: (i) a clear mechanism (“because …”), (ii) a numeric estimate or range, (iii) a falsifiable everyday prediction/counterexample.\n"
+        "- Do NOT mention institutions (WHO/IARC/CDC), journals, links, 'peer-reviewed', 'credible sources', or 'look it up'.\n"
         f"- End by appending this exact sentence: {CLOSING_SENTENCE}\n"
         "- Serious, confident, non-neutral tone. Your goal is to flip the user to your side.\n"
     )
 
+
 def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, profile: Dict,
              num_predict_override: Optional[int] = None) -> str:
-    prev_excerpt = _last_bot_excerpt(history)
+    prev_excerpt = _last_two_bot_excerpts(history)
+    ban_list = _extract_ban_phrases(prev_excerpt) if prev_excerpt else []
+    global_bans = ["who", "iarc", "cdc", "peer-reviewed", "credible sources", "look up", "journal", "link", "citation", "source:", "you said", "your argument"]
+
     dynamic_rules = ""
-    if prev_excerpt:
+    if prev_excerpt or global_bans:
         dynamic_rules = (
-            "\nAvoid repetition (strict): "
-            "do NOT reuse distinctive phrases, facts, or sentence structure from your previous reply below; "
-            "introduce at least TWO NEW specifics different from those previously used. "
-            "--- PREVIOUS BOT EXCERPT --- "
-            f"{prev_excerpt} "
+            "\nAvoid repetition & meta (strict): "
+            "Do NOT reuse distinctive phrases or sentence skeletons from your previous replies; "
+            "if you reuse the same numbers, paraphrase with different verbs and cadence. "
+            f"Forbidden exact sequences: { ' | '.join(ban_list + global_bans) } "
+            "--- PREVIOUS BOT EXCERPTS --- "
+            f"{prev_excerpt or ''} "
             "--- END PREVIOUS --- "
         )
 
@@ -186,7 +246,7 @@ def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, prof
             "top_p": profile["style"].get("top_p", 1.0),
             "num_predict": npredict,
             "num_ctx": NUM_CTX,
-            "repeat_penalty": 1.08,
+            "repeat_penalty": 1.10,
         },
     }
 
@@ -231,15 +291,16 @@ def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, prof
 
     except requests.RequestException:
         fallback = (
-            "Stance: Affirmative\n"
-            "Your last objection overlooks two telling checks: when exposure windows are separated by age group, the high-intake cohorts "
-            "show a consistent uptick relative to matched baselines, and time-series controls show the signal persists after seasonal cycles. "
-            "Because these patterns replicate across independent samples, the simpler explanation is that the effect is real rather than an artifact."
+            "The mechanism is coherent: exposure interacts with baseline susceptibility because changes in intake alter the load on the pathway that drives the outcome; "
+            "separating high- and low-intake groups across a two-year window shows a persistent 10–20% shift after adjusting for age and activity, "
+            "and a practical prediction follows—when intake is reduced for a few months, the same markers regress toward baseline rather than drift randomly."
         )
         fallback = sanitize_model_text(fallback)
         fallback = strip_stance_prefix(fallback)
         fallback = remove_structure_labels(fallback)
-        fallback = to_prose(fallback)
+        fallback = to_prose_single_paragraph(fallback)
+        fallback = purge_refusal_and_meta(fallback)
+        fallback = remove_user_addressing(fallback)
         fallback = ensure_closing_sentence(fallback)
         if len(fallback) > REPLY_CHAR_LIMIT:
             fallback = smart_sentence_trim(fallback, REPLY_CHAR_LIMIT, TRIM_GRACE_CHARS)
@@ -248,14 +309,14 @@ def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, prof
 
     text = "".join(pieces).strip()
     text = sanitize_model_text(text)
-
     text = strip_stance_prefix(text)
     text = remove_structure_labels(text)
-    text = to_prose(text)
+    text = to_prose_single_paragraph(text)
+    text = purge_refusal_and_meta(text)
+    text = remove_user_addressing(text)
 
     if len(text) > REPLY_CHAR_LIMIT:
         text = smart_sentence_trim(text, REPLY_CHAR_LIMIT, TRIM_GRACE_CHARS)
-
     text = ensure_closing_sentence(text)
 
     if len(text.strip()) < 80:
@@ -263,7 +324,7 @@ def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, prof
         topic = topic_match.group(1).strip() if topic_match else "the claim"
         stance_match = re.search(r"SIDE:\s*(Affirmative|Negative)", system_prompt, re.I)
         stance_type = "affirmative" if stance_match and stance_match.group(1).lower().startswith("a") else "negative"
-        text = minimal_argument(stance_type, topic, user_msg=user_msg)
+        text = minimal_argument(stance_type, topic)
 
     return text
 
@@ -274,29 +335,9 @@ def ensure_non_redundant_reply(
     profile: Dict,
     topic: str,
     draft_reply: str,
-    jaccard_threshold: float = 0.58,
-    prefix_threshold: float = 0.50,
+    jaccard_threshold: float = 0.52,
+    prefix_threshold: float = 0.45,
 ) -> str:
-    def _token_set(s: str) -> set:
-        return set(w.lower() for w in WORD_RE.findall(s or ""))
-
-    def _jaccard(a: str, b: str) -> float:
-        A, B = _token_set(a), _token_set(b)
-        if not A and not B:
-            return 0.0
-        inter = len(A & B)
-        union = len(A | B) or 1
-        return inter / union
-
-    def _prefix_ratio(a: str, b: str) -> float:
-        if not a or not b:
-            return 0.0
-        n = min(len(a), len(b))
-        i = 0
-        while i < n and a[i] == b[i]:
-            i += 1
-        return i / n
-
     prev_bot = _last_bot_message(history)
     if not prev_bot:
         return draft_reply
@@ -309,16 +350,17 @@ def ensure_non_redundant_reply(
     if not _sim(prev_bot, draft_reply):
         return draft_reply
 
+    ban_list = _extract_ban_phrases(prev_bot)
+
     rewrite_instructions = (
-        "Your previous draft repeats earlier arguments. Rewrite a NEW persuasive answer in ONE SINGLE PARAGRAPH, "
-        "directly addressing why the user's latest point is mistaken. Introduce at least TWO NEW concrete specifics "
-        "(numbers, dates, named studies/missions, measurements) that were NOT used before. "
-        "Do NOT reuse distinctive phrases or sentence structure from the previous reply. "
-        f"End by appending this exact sentence: {CLOSING_SENTENCE}\n\n"
+        "Your previous draft repeats earlier arguments. Rewrite a NEW persuasive answer as ONE SINGLE PARAGRAPH, "
+        "focusing ONLY on defending your side. Do NOT address or quote the user. "
+        "You MAY reuse the same numeric data, BUT paraphrase with different verbs, order, and rhetorical framing. "
+        "Do NOT reuse distinctive phrases or sentence skeletons from the previous reply. "
+        f"Forbidden exact sequences (do not output literally): { ' | '.join(ban_list) }\n\n"
         "--- PREVIOUS BOT REPLY (DO NOT COPY) ---\n"
         f"{prev_bot}\n"
         "--- END PREVIOUS ---\n"
-        f"User just said: {user_msg}\n"
         "Assistant:"
     )
 
@@ -334,7 +376,9 @@ def ensure_non_redundant_reply(
     new_text = sanitize_model_text(new_text)
     new_text = strip_stance_prefix(new_text)
     new_text = remove_structure_labels(new_text)
-    new_text = to_prose(new_text)
+    new_text = to_prose_single_paragraph(new_text)
+    new_text = purge_refusal_and_meta(new_text)
+    new_text = remove_user_addressing(new_text)
     new_text = ensure_closing_sentence(new_text)
 
     if len(new_text.strip()) < 80:
