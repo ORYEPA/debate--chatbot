@@ -1,25 +1,33 @@
+#!/bin/sh
 set -e
 
 PRIMARY="${MODEL_NAME:-llama3.2:1b}"
 CANDIDATES="$PRIMARY,llama3.2:1b,llama3.1:8b"
 
+# Escucha en 0.0.0.0 para Fly
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:11434}"
 
 echo "[ollama] starting server on $OLLAMA_HOST ..."
 ollama serve &
 SERVER_PID=$!
+
+# Apaga limpio si recibe señales
 trap "kill -TERM $SERVER_PID; wait $SERVER_PID" INT TERM
 
 echo "[ollama] waiting for readiness..."
-for i in $(seq 1 60); do
+i=0
+while [ $i -lt 60 ]; do
   if ollama list >/dev/null 2>&1; then
     break
   fi
+  i=$((i+1))
   sleep 1
 done
 
 pulled=0
-for tag in $(echo "$CANDIDATES" | tr ',' ' '); do
+# Recorre candidatos separados por coma
+IFS=',' 
+for tag in $CANDIDATES; do
   echo "[ollama] trying to pull: $tag"
   if ollama pull "$tag"; then
     echo "[ollama] model ready: $tag"
@@ -29,9 +37,11 @@ for tag in $(echo "$CANDIDATES" | tr ',' ' '); do
     echo "[ollama] pull failed for $tag, trying next..."
   fi
 done
+unset IFS
 
 if [ "$pulled" -ne 1 ]; then
-  echo "[ollama] WARNING: no model could be pulled now (network/tag). Server stays up; try later: 'ollama pull <model>'"
+  echo "[ollama] WARNING: no model could be pulled now (network/tag)."
+  echo "[ollama] Server stays up; try later: 'ollama pull <model>'"
 fi
 
 echo "[ollama] server ready"
