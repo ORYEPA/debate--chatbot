@@ -69,7 +69,7 @@ def to_prose_single_paragraph(text: str) -> str:
     for ln in text.splitlines():
         ln = ENUM_BULLET_RE.sub("", ln).strip()
         lines.append(ln)
-    s = " ".join(lines)                 
+    s = " ".join(lines)                
     s = remove_structure_labels(s)
     s = re.sub(r"\s{2,}", " ", s)       
     return s.strip()
@@ -208,7 +208,6 @@ def build_system_prompt(profile: Dict, topic: str, side: str) -> str:
         "- Serious, confident, non-neutral tone. Your goal is to flip the user to your side.\n"
     )
 
-
 def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, profile: Dict,
              num_predict_override: Optional[int] = None) -> str:
     prev_excerpt = _last_two_bot_excerpts(history)
@@ -289,25 +288,34 @@ def call_llm(system_prompt: str, history: List[ChatMessage], user_msg: str, prof
                 if time.time() - start > HTTP_TIMEOUT_SECONDS - 1:
                     break
 
-    except requests.RequestException:
-        fallback = (
-            "The mechanism is coherent: exposure interacts with baseline susceptibility because changes in intake alter the load on the pathway that drives the outcome; "
-            "separating high- and low-intake groups across a two-year window shows a persistent 10–20% shift after adjusting for age and activity, "
-            "and a practical prediction follows—when intake is reduced for a few months, the same markers regress toward baseline rather than drift randomly."
-        )
-        fallback = sanitize_model_text(fallback)
-        fallback = strip_stance_prefix(fallback)
-        fallback = remove_structure_labels(fallback)
-        fallback = to_prose_single_paragraph(fallback)
-        fallback = purge_refusal_and_meta(fallback)
-        fallback = remove_user_addressing(fallback)
-        fallback = ensure_closing_sentence(fallback)
-        if len(fallback) > REPLY_CHAR_LIMIT:
-            fallback = smart_sentence_trim(fallback, REPLY_CHAR_LIMIT, TRIM_GRACE_CHARS)
-            fallback = ensure_closing_sentence(fallback)
-        return fallback
+    except requests.Timeout:
+        reason = f"tiempo de espera agotado tras {HTTP_TIMEOUT_SECONDS}s al contactar a Ollama"
+        hint   = "Incrementa HTTP_TIMEOUT_SECONDS o reduce NUM_PREDICT_CAP/NUM_CTX."
+        return f"No se pudo procesar tu petición. Motivo: {reason}. {hint}"
+
+    except requests.ConnectionError:
+        reason = f"no se pudo conectar a Ollama en {OLLAMA_BASE_URL}"
+        hint   = "Verifica OLLAMA_BASE_URL y que el servicio de Ollama esté encendido (/health, /api/tags)."
+        return f"No se pudo procesar tu petición. Motivo: {reason}. {hint}"
+
+    except requests.HTTPError as e:
+        code = getattr(getattr(e, 'response', None), 'status_code', 'desconocido')
+        reason = f"error HTTP {code} recibido desde Ollama"
+        hint   = "Revisa logs de Ollama; el modelo puede no estar disponible o el endpoint no existe."
+        return f"No se pudo procesar tu petición. Motivo: {reason}. {hint}"
+
+    except requests.RequestException as e:
+        reason = f"error de red ({e.__class__.__name__}) al contactar a Ollama"
+        hint   = "Comprueba conectividad y variables OLLAMA_BASE_URL/OLLAMA_KEEP_ALIVE."
+        return f"No se pudo procesar tu petición. Motivo: {reason}. {hint}"
 
     text = "".join(pieces).strip()
+
+    if not text:
+        return ("No se pudo procesar tu petición: el modelo no devolvió contenido útil. "
+                "Puede deberse a un prompt muy corto/ambiguo o a cortes por límites. "
+                "Intenta ser más específico o reduce NUM_PREDICT_CAP/ajusta REPLY_CHAR_LIMIT.")
+
     text = sanitize_model_text(text)
     text = strip_stance_prefix(text)
     text = remove_structure_labels(text)

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from profiles import PROFILE
 from app.config import (
     DEFAULT_TOPIC, DEFAULT_SIDE, OLLAMA_BASE_URL,
-    redis_client, REVISION_PASS,
+    redis_client, REVISION_PASS, STRICT_ALIGN,
 )
 from app.models import (
     CommandsResponse, Command, ProfilesResponse, ProfileInfo,
@@ -31,6 +31,16 @@ from app.services.guards import (
 )
 
 router = APIRouter()
+
+
+def _ollama_up(base_url: str) -> bool:
+    """Ping rápido para saber si Ollama está respondiendo; evita pasadas extra cuando está lento/caído."""
+    try:
+        r = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=1.5)
+        r.raise_for_status()
+        return True
+    except Exception:
+        return False
 
 
 @router.get("/health")
@@ -149,8 +159,8 @@ def ask(req: AskRequest):
         conv = {
             "meta": {
                 "topic": topic,
-                "side": bot_side,                 
-                "stance_type": stance_type,      
+                "side": bot_side,
+                "stance_type": stance_type,
                 "initial_topic": topic,
                 "initial_user_side": user_side,
                 "locked_side": True,
@@ -161,7 +171,6 @@ def ask(req: AskRequest):
             "messages": [],
         }
         save_conversation(cid, conv)
-
     else:
         cid = normalized_cid
         conv = get_conversation(cid)
@@ -207,7 +216,7 @@ def ask(req: AskRequest):
     meta = conv["meta"]
     topic = meta["topic"]
     bot_side = meta["side"]
-    stance_type = meta.get("stance_type") or stance_type_from(bot_side) 
+    stance_type = meta.get("stance_type") or stance_type_from(bot_side)
     profile_id = meta["profile_id"]
     profile = PROFILE[profile_id]
 
@@ -223,12 +232,13 @@ def ask(req: AskRequest):
     sys_prompt = build_system_prompt(profile, topic, bot_side)
     bot_reply = call_llm(sys_prompt, history, user_text, profile)
 
-    if REVISION_PASS:
+    if _ollama_up(OLLAMA_BASE_URL) and REVISION_PASS:
         bot_reply = revise_if_needed(bot_reply, sys_prompt, history, user_text, profile, topic)
 
-    aligned, _ = verify_alignment_via_llm(topic, stance_type, bot_reply)
-    if not aligned:
-        bot_reply = force_rewrite_for_alignment(sys_prompt, history, user_text, profile, topic, stance_type)
+    if _ollama_up(OLLAMA_BASE_URL) and STRICT_ALIGN:
+        aligned, _ = verify_alignment_via_llm(topic, stance_type, bot_reply)
+        if not aligned:
+            bot_reply = force_rewrite_for_alignment(sys_prompt, history, user_text, profile, topic, stance_type)
 
     bot_reply = strip_stance_prefix(bot_reply)
     if len(bot_reply.strip()) < 80:
@@ -258,5 +268,5 @@ def ask(req: AskRequest):
         conversation_id=cid,
         message=last5,
         latency_ms=latency_ms,
-        stance=stance_type,   
+        stance=stance_type,
     )
