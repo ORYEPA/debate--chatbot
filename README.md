@@ -70,7 +70,7 @@ LOG_LEVEL=info                 # debug | info | warning | error
 ENABLE_CORS=true
 
 # LLM / Ollama
-OLLAMA_BASE_URL=http://localhost:11434  # Apunta a tu servidor Ollama o proveedor LLM
+OLLAMA_BASE_URL=http://ollama:11434  # Apunta a tu servidor Ollama o proveedor LLM
 MODEL_NAME=llama3:8b
 HTTP_TIMEOUT_SECONDS=60
 KEEP_ALIVE=5m
