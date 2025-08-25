@@ -1,25 +1,22 @@
-# fly.toml app configuration file generated for debate-ollama on 2025-08-24T00:13:30-06:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
+app = "debate-ollama"
+primary_region = "qro"
+image = "ollama/ollama:latest"
 
-app = 'debate-ollama'
-primary_region = 'qro'
+[env]
+  OLLAMA_HOST = "0.0.0.0:11434"
 
-[build]
-
-[[mounts]]
-  source = 'models'
-  destination = '/root/.ollama'
+release_command = "/bin/sh -lc 'ollama serve & sleep 3 && ollama pull ${MODEL_NAME:-llama3.2:1b}'"
 
 [http_service]
   internal_port = 11434
-  force_https = true
-  auto_stop_machines = 'off'
+  auto_stop_machines = "off"
   min_machines_running = 1
+  force_https = true
+
+[[mounts]]
+  source = "models"
+  destination = "/root/.ollama"
 
 [[vm]]
-  size = 'shared-cpu-2x'
-  memory = '64gb'
-  cpu_kind = 'performance'
-  cpus = 8
+  size = "performance-2x"   
+  memory = "16384"          

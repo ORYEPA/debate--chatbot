@@ -1,17 +1,14 @@
-#!/bin/sh
 set -e
 
 PRIMARY="${MODEL_NAME:-llama3.2:1b}"
 CANDIDATES="$PRIMARY,llama3.2:1b,llama3.1:8b"
 
-# Escucha en 0.0.0.0 para Fly
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:11434}"
 
 echo "[ollama] starting server on $OLLAMA_HOST ..."
 ollama serve &
 SERVER_PID=$!
 
-# Apaga limpio si recibe señales
 trap "kill -TERM $SERVER_PID; wait $SERVER_PID" INT TERM
 
 echo "[ollama] waiting for readiness..."
@@ -25,7 +22,6 @@ while [ $i -lt 60 ]; do
 done
 
 pulled=0
-# Recorre candidatos separados por coma
 IFS=',' 
 for tag in $CANDIDATES; do
   echo "[ollama] trying to pull: $tag"
