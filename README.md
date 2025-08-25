@@ -13,9 +13,9 @@ Cliente (curl / App / Postman)
         │
         ▼
    FastAPI (app)
-        │             ┌───────────────────────────────┐
-        │────────────▶│  Servidor LLM (Ollama u otro) │
-        │             └───────────────────────────────┘
+        │              ┌───────────────────────────────┐
+        │────────────▶ │  Servidor LLM (Ollama) 	   │
+        │              └───────────────────────────────┘
         │
         ▼
   Lógica de conversación (memoria corta, reglas)
@@ -125,21 +125,33 @@ version: "3.9"
 services:
   api:
     build: .
-    env_file: .env
+    env_file:
+      - .env
+    environment:
+      PORT: "8080"
+      REDIS_URL: "redis://redis:6379"
+      OLLAMA_URL: "http://ollama:11434"
     ports:
-      - "${PORT:-8000}:8000"
+      - "8080:8080"
     depends_on:
+      - redis
       - ollama
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
 
   ollama:
     image: ollama/ollama:latest
     ports:
       - "11434:11434"
     volumes:
-      - ollama:/root/.ollama
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
 volumes:
-  ollama:
+  ollama_data:
 ```
 
 > Para usar **modelo local**, entra al contenedor `ollama` y ejecuta `ollama pull llama3:8b`. El Makefile incluye un atajo.
@@ -239,100 +251,36 @@ make test
 # Makefile
 
 ```makefile
-# Makefile — Debate Chatbot
-# Usa: `make` para ver ayuda
+SHELL := /bin/sh
 
-SHELL := /bin/bash
-PY := $(shell command -v python3 >/dev/null 2>&1 && echo python3 || (command -v py >/dev/null 2>&1 && echo 'py -3' || echo python3))
-DC := $(shell docker compose version >/dev/null 2>&1 && echo 'docker compose' || (command -v docker-compose >/dev/null 2>&1 && echo 'docker-compose' || echo 'docker compose'))
+.PHONY: help
+help: 
+	@echo "make help        - lista de comandos"
+	@echo "make install     - instala requisitos locales (Python 3.11+, pip)"
+	@echo "make test        - ejecuta tests (local)"
+	@echo "make run         - levanta docker compose (api + redis + ollama)"
+	@echo "make down        - baja servicios"
+	@echo "make clean       - baja y borra volúmenes"
 
-.ONESHELL:
-.DEFAULT_GOAL := help
+.PHONY: install
+install:
+	@python --version || (echo "❗ Instala Python 3.11+ primero"; exit 1)
+	@pip --version || (echo "❗ Instala pip primero"; exit 1)
+	@pip install -r fastapi/requirements.txt
 
-## help: Muestra esta ayuda
-help:
-	@echo "Comandos disponibles:";
-	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | sed -E 's/:.*##/: /' | sort | column -s: -t
-
-## install: Instala requerimientos locales (venv + requirements.txt)
-install: check-make
-	@# Verificar Python
-	@if ! command -v $(PY) >/dev/null 2>&1; then \
-		echo "❌ Python 3.11+ no encontrado."; \
-		echo "  Windows: winget install Python.Python.3.11"; \
-		echo "  macOS:   brew install python@3.11"; \
-		echo "  Linux:   sudo apt-get install python3 python3-venv python3-pip"; \
-		exit 1; \
-	fi
-	@# Crear venv si no existe
-	@if [ ! -d .venv ]; then $(PY) -m venv .venv; fi
-	@# Activar venv y pip install (Git Bash / Unix shells)
-	@source .venv/bin/activate 2>/dev/null || true; \
-	python -m pip install --upgrade pip; \
-	pip install -r requirements.txt
-	@echo "✅ Entorno instalado en .venv"
-
-## test: Ejecuta tests con pytest
+.PHONY: test
 test:
-	@source .venv/bin/activate 2>/dev/null || true; \
-	pytest -q || { echo "❌ Pytest falló o no está instalado."; exit 1; }
+	@python -m pytest -q fastapi/tests
 
-## run: Levanta API (y servicios relacionados) en Docker
-run: check-docker
-	@echo "▶ Levantando servicios con $(DC) ..."
-	@$(DC) up -d --build
-	@echo "ℹ Si usas Ollama local, puedes cargar el modelo con: make pull-model"
-	@echo "🌐 API en: http://localhost:$${PORT:-8000}"
+.PHONY: run
+run:
+	docker compose up -d --build
 
-## pull-model: Pull del modelo en el contenedor de Ollama (usa MODEL_NAME de .env)
-pull-model: check-docker
-	@set -a; [ -f .env ] && source .env; set +a; \
-	MODEL="$${MODEL_NAME:-llama3:8b}"; \
-	CID=$$($(DC) ps -q ollama); \
-	if [ -z "$$CID" ]; then echo "❌ Servicio 'ollama' no está corriendo"; exit 1; fi; \
-	$(DC) exec ollama ollama pull $$MODEL
+.PHONY: down
+down:
+	docker compose down
 
-## down: Apaga los servicios Docker
-down: check-docker
-	@$(DC) down
-
-## clean: Teardown completo (containers, volúmenes, imágenes locales)
-clean: check-docker
-	@$(DC) down -v --rmi local --remove-orphans || true
-	@echo "🧹 Limpieza completa"
-
-## env: Crea .env desde .env.example si no existe
-env:
-	@if [ -f .env ]; then echo ".env ya existe"; exit 0; fi
-	@if [ -f .env.example ]; then cp .env.example .env && echo "Creado .env desde .env.example"; else \
-	 echo "No hay .env.example. Crea .env manualmente (ver README)."; fi
-
-## check-docker: Verifica Docker y Compose
-check-docker:
-	@if ! command -v docker >/dev/null 2>&1; then \
-		echo "❌ Docker no encontrado."; \
-		echo "  Windows/macOS: Instala Docker Desktop."; \
-		echo "  Linux: sudo apt-get install docker.io"; \
-		exit 1; \
-	fi
-	@if docker compose version >/dev/null 2>&1; then \
-		echo "✅ docker compose OK"; \
-	elif command -v docker-compose >/dev/null 2>&1; then \
-		echo "✅ docker-compose OK (modo legacy)"; \
-	else \
-		echo "❌ Docker Compose no encontrado. Actualiza Docker Desktop o instala docker-compose."; \
-		exit 1; \
-	fi
-
-## check-make: Verifica que 'make' sea ejecutable
-check-make:
-	@if ! command -v make >/dev/null 2>&1; then \
-		echo "❌ 'make' no encontrado."; \
-		echo "  Windows: usa Git Bash (instala Git for Windows) o winget/choco para 'make'."; \
-		echo "  macOS: xcode-select --install o brew install make"; \
-		echo "  Linux: sudo apt-get install make"; \
-		exit 1; \
-	fi
-
-.PHONY: help install test run down clean env check-docker check-make pull-model
+.PHONY: clean
+clean:
+	docker compose down -v --remove-orphans
 ```
