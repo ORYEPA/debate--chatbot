@@ -42,3 +42,4 @@ fi
 
 echo "[ollama] server ready"
 wait "$SERVER_PID"
+
