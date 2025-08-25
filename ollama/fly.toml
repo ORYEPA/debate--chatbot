@@ -1,0 +1,22 @@
+app = "debate-ollama"
+primary_region = "qro"
+image = "ollama/ollama:latest"
+
+[env]
+  OLLAMA_HOST = "0.0.0.0:11434"
+
+release_command = "/bin/sh -lc 'ollama serve & sleep 3 && ollama pull ${MODEL_NAME:-llama3.2:1b}'"
+
+[http_service]
+  internal_port = 11434
+  auto_stop_machines = "off"
+  min_machines_running = 1
+  force_https = true
+
+[[mounts]]
+  source = "models"
+  destination = "/root/.ollama"
+
+[[vm]]
+  size = "performance-2x"   
+  memory = "16384"          
