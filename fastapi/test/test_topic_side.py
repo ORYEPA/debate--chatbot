@@ -1,5 +1,12 @@
-from app import infer_topic_and_side, DEFAULT_TOPIC, DEFAULT_SIDE
+from app import config
 
-def test_default_topic_side():
-    t,s = infer_topic_and_side("hello")
-    assert t == DEFAULT_TOPIC and s == DEFAULT_SIDE
+def test_universal_system_prompt_contract():
+    usp = config.UNIVERSAL_SYSTEM_PROMPT
+
+    assert "Return ONLY a valid JSON object" in usp
+    assert '"stance":"pro|contra"' in usp
+
+    assert "never neutral" in usp.lower()
+
+    low = usp.lower()
+    assert ("prefixes like 'stance:'" in low) or ("no prefixes" in low) or ("no prefix" in low)

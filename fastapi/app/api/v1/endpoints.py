@@ -1,41 +1,40 @@
 import time
 import requests
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Query
 
-from profiles import PROFILE
+from app.profiles import PROFILE
 from app.config import (
-    DEFAULT_TOPIC, DEFAULT_SIDE, OLLAMA_BASE_URL,
-    redis_client, REVISION_PASS, STRICT_ALIGN,
+    DEFAULT_TOPIC,
+    DEFAULT_SIDE,
+    OLLAMA_BASE_URL,
+    OPENAI_API_KEY,
+    OPENAI_BASE_URL,
+    redis_client,
 )
 from app.models import (
     CommandsResponse, Command, ProfilesResponse, ProfileInfo,
     CreateProfileRequest, CreateProfileResponse, ConversationMetaResponse,
-    HistoryResponse, AskRequest, AskResponse, ChatMessage
+    HistoryResponse, AskRequest, AskResponse, ChatMessage,
 )
 from app.services.conversation import (
     new_cid, get_conversation, save_conversation, last_n,
     extract_profile_cmd, normalize_cid, topic_change_requested,
-    bot_side_for, stance_type_from, detect_user_agreement
+    bot_side_for, stance_type_from, detect_user_agreement,
 )
 from app.services.classifier import classify_topic_and_user_side_via_llm
-from app.services.llm import (
-    build_system_prompt, call_llm,
-    strip_stance_prefix, minimal_argument,
-    ensure_non_redundant_reply,
-)
-from app.services.guards import (
-    verify_alignment_via_llm, force_rewrite_for_alignment,
-    revise_if_needed, maybe_append_invite_on_agreement
-)
+
+from app.services.llm import generate_reply
 
 router = APIRouter()
 
 
 def _ollama_up(base_url: str) -> bool:
-    """Ping rápido para saber si Ollama está respondiendo; evita pasadas extra cuando está lento/caído."""
+    """Quick ping to check if Ollama is reachable."""
     try:
+        if not base_url:
+            return False
         r = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=1.5)
         r.raise_for_status()
         return True
@@ -52,18 +51,25 @@ def health():
 
     ollama_ok, ollama_err = False, None
     try:
-        r = requests.get(f"{OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=3)
-        r.raise_for_status()
-        ollama_ok = True
+        if OLLAMA_BASE_URL:
+            r = requests.get(f"{OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=3)
+            r.raise_for_status()
+            ollama_ok = True
     except Exception as e:
         ollama_err = str(e)
 
+    openai_ready = bool(OPENAI_API_KEY)
+
+    status_ok = ok_redis and (ollama_ok or openai_ready)
+
     return {
-        "status": "ok" if (ok_redis and ollama_ok) else "degraded",
+        "status": "ok" if status_ok else "degraded",
         "redis": ok_redis,
         "ollama_base_url": OLLAMA_BASE_URL,
         "ollama_reachable": ollama_ok,
         "ollama_error": ollama_err,
+        "openai_ready": openai_ready,
+        "openai_base_url": OPENAI_BASE_URL,
     }
 
 
@@ -71,30 +77,51 @@ def health():
 def list_commands():
     return CommandsResponse(commands=[
         Command(name="List commands", method="GET", path="/commands", description="Lista de endpoints disponibles con ejemplos"),
-        Command(name="Health", method="GET", path="/health", description="Estado de la API, Ollama y Redis"),
+        Command(name="Health", method="GET", path="/health", description="Estado de la API, LLMs y Redis"),
         Command(name="List profiles", method="GET", path="/profiles", description="Perfiles disponibles (id y nombre)"),
-        Command(name="Set profile (create conversation)", method="POST", path="/conversations/profile",
-                description="Crea una nueva conversación con el perfil indicado (tema/side por defecto del reto)",
-                body_example={"profile_id": "rude_arrogant"}),
-        Command(name="Chat (ask)", method="POST", path="/ask",
-                description="Si no envías conversation_id (o envías 'string'), crea nueva conversación con perfil por defecto. Devuelve latency_ms y los últimos 5 mensajes."),
-        Command(name="Conversation meta", method="GET", path="/conversations/{conversation_id}/meta",
-                description="Devuelve profile_id, profile_name, topic y side (lado de la IA)"),
-        Command(name="History", method="GET", path="/conversations/{conversation_id}/history5",
-                description="Devuelve últimos N mensajes si pasas ?limit=N; si omites limit, devuelve TODO el historial.",
-                query_example={"limit": 10}),
+        Command(
+            name="Set profile (create conversation)",
+            method="POST",
+            path="/conversations/profile",
+            description="Crea una nueva conversación con el perfil indicado (tema/side por defecto del reto)",
+            body_example={"profile_id": "rude_arrogant"},
+        ),
+        Command(
+            name="Chat (ask)",
+            method="POST",
+            path="/ask",
+            description="Si no envías conversation_id (o 'string'), crea nueva conversación con perfil por defecto. Devuelve latency_ms y los últimos 5 mensajes.",
+        ),
+        Command(
+            name="Conversation meta",
+            method="GET",
+            path="/conversations/{conversation_id}/meta",
+            description="Devuelve profile_id, profile_name, topic y side (lado de la IA)",
+        ),
+        Command(
+            name="History",
+            method="GET",
+            path="/conversations/{conversation_id}/history5",
+            description="Devuelve últimos N mensajes con ?limit=N; si omites limit, devuelve todo el historial.",
+            query_example={"limit": 10},
+        ),
     ])
 
 
 @router.get("/profiles", response_model=ProfilesResponse)
 def get_profiles():
-    return ProfilesResponse(profiles=[ProfileInfo(id=p["id"], name=p["name"]) for p in PROFILE.values()])
+    return ProfilesResponse(
+        profiles=[ProfileInfo(id=p["id"], name=p["name"]) for p in PROFILE.values()]
+    )
 
 
 @router.post("/conversations/profile", response_model=CreateProfileResponse)
 def create_conversation_with_profile(req: CreateProfileRequest):
     if req.profile_id not in PROFILE:
-        raise HTTPException(status_code=400, detail=f"Unknown profile '{req.profile_id}'. Available: {list(PROFILE.keys())}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown profile '{req.profile_id}'. Available: {list(PROFILE.keys())}",
+        )
     cid = new_cid()
     conv = {
         "meta": {
@@ -131,8 +158,8 @@ def get_conversation_meta(conversation_id: str):
 @router.get("/conversations/{conversation_id}/history5", response_model=HistoryResponse)
 def get_history(conversation_id: str, limit: Optional[int] = Query(None, ge=1, le=1000)):
     """
-    Si 'limit' viene vacío -> devuelve TODO el historial.
-    Si 'limit' viene -> devuelve los últimos 'limit' mensajes, en orden cronológico.
+    If 'limit' is empty -> return full history.
+    If 'limit' is provided -> return last 'limit' messages in chronological order.
     """
     conv = get_conversation(conversation_id)
     if not conv:
@@ -144,6 +171,12 @@ def get_history(conversation_id: str, limit: Optional[int] = Query(None, ge=1, l
 
 @router.post("/ask", response_model=AskResponse)
 def ask(req: AskRequest):
+    """
+    Same endpoint set, simplified internals:
+    - Uses new TEXT-ONLY generator with fallback to OpenAI.
+    - No over-validation or rewrite passes.
+    - Returns stance as 'pro' | 'contra' from backend logic (not from model output).
+    """
     start = time.time()
 
     requested_profile, user_text = extract_profile_cmd(req.message)
@@ -214,12 +247,6 @@ def ask(req: AskRequest):
         save_conversation(cid, conv)
 
     meta = conv["meta"]
-    topic = meta["topic"]
-    bot_side = meta["side"]
-    stance_type = meta.get("stance_type") or stance_type_from(bot_side)
-    profile_id = meta["profile_id"]
-    profile = PROFILE[profile_id]
-
     history = [ChatMessage(**m) for m in conv.get("messages", [])]
 
     if detect_user_agreement(user_text):
@@ -229,44 +256,19 @@ def ask(req: AskRequest):
     user_text = user_text[:800]
     history.append(ChatMessage(role="user", message=user_text))
 
-    sys_prompt = build_system_prompt(profile, topic, bot_side)
-    bot_reply = call_llm(sys_prompt, history, user_text, profile)
+    stance_hint = "pro" if meta.get("stance_type") == "affirmative" else "contra"
+    mr = generate_reply(history, user_text, stance_hint=stance_hint)
 
-    if _ollama_up(OLLAMA_BASE_URL) and REVISION_PASS:
-        bot_reply = revise_if_needed(bot_reply, sys_prompt, history, user_text, profile, topic)
-
-    if _ollama_up(OLLAMA_BASE_URL) and STRICT_ALIGN:
-        aligned, _ = verify_alignment_via_llm(topic, stance_type, bot_reply)
-        if not aligned:
-            bot_reply = force_rewrite_for_alignment(sys_prompt, history, user_text, profile, topic, stance_type)
-
-    bot_reply = strip_stance_prefix(bot_reply)
-    if len(bot_reply.strip()) < 80:
-        bot_reply = minimal_argument(stance_type, topic)
-
-    bot_reply = ensure_non_redundant_reply(
-        sys_prompt=sys_prompt,
-        history=history,
-        user_msg=user_text,
-        profile=profile,
-        topic=topic,
-        draft_reply=bot_reply,
-        jaccard_threshold=0.52,
-        prefix_threshold=0.45,
-    )
-
-    if conv["meta"].get("user_aligned"):
-        bot_reply = maybe_append_invite_on_agreement(bot_reply)
-
-    history.append(ChatMessage(role="bot", message=bot_reply))
-    conv["messages"] = [m.model_dump() for m in history][-20:]
+    history.append(ChatMessage(role="assistant", message=mr.reply))
+    conv["messages"] = [m.model_dump(by_alias=True) for m in history][-20:]
     save_conversation(cid, conv)
 
     last5 = last_n([ChatMessage(**m) for m in conv["messages"]], n=5)
     latency_ms = int((time.time() - start) * 1000)
+
     return AskResponse(
         conversation_id=cid,
         message=last5,
         latency_ms=latency_ms,
-        stance=stance_type,
+        stance=mr.stance,  
     )
