@@ -17,7 +17,7 @@ install:
 
 .PHONY: test
 test:
-	@python -m pytest -q fastapi/tests
+	@python -m pytest -q fastapi/test
 
 .PHONY: run
 run:

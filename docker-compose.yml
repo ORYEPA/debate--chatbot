@@ -14,24 +14,43 @@ services:
       - chatbot-net
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
-      - MODEL_NAME=llama3.2:1b
+      - MODEL_NAME=${MODEL_NAME:-llama3.2:1b}
     restart: unless-stopped
+    # Opcional: healthcheck simple (no bloquea el arranque del API)
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
   web:
     build: ./fastapi
     container_name: debate-api
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - REDIS_URL=redis://redis:6379/0          
-      - PROFILE_DEFAULT=smart_shy               
-      - MODEL_NAME=llama3.2:1b 
-      - DOCS_VERSION=${DOCS_VERSION:-dev}     
-      #- OLLAMA_NUM_THREAD=8        
-      #- OLLAMA_NUM_CTX=2048   
-      - OLLAMA_KEEP_ALIVE=10m    
+      # ---- Redis / perfil / modelo ----
+      - REDIS_URL=redis://redis:6379/0
+      - PROFILE_DEFAULT=${PROFILE_DEFAULT:-smart_shy}
+      - MODEL_NAME=${MODEL_NAME:-llama3.2:1b}
+      - DOCS_VERSION=${DOCS_VERSION:-dev}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-10m}
+      - NUM_CTX=${NUM_CTX:-512}
+      - HTTP_TIMEOUT_SECONDS=${HTTP_TIMEOUT_SECONDS:-45}
+      - REPLY_CHAR_LIMIT=${REPLY_CHAR_LIMIT:-550}
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
+
+      # ---- Proveedor LLM primario: Ollama ----
+      # Si quieres forzar OpenAI, deja esto vacío en tu .env: OLLAMA_BASE_URL=
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+
+      # ---- Fallback a OpenAI ----
+      - PROVIDER_PREFERENCE=${PROVIDER_PREFERENCE:-ollama_first}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+
     depends_on:
       - ollama
-      - redis                                   
+      - redis
     ports:
       - "8000:8000"
     volumes:
@@ -52,7 +71,7 @@ services:
       timeout: 3s
       retries: 20
     networks:
-      - chatbot-net                              
+      - chatbot-net
 
 networks:
   chatbot-net:
@@ -61,5 +80,5 @@ networks:
 volumes:
   ollama_models:
     driver: local
-  redis_data:                                    
+  redis_data:
     driver: local

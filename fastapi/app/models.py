@@ -1,53 +1,84 @@
-from typing import List, Dict, Optional, Any
-from pydantic import BaseModel
+from typing import List, Dict, Optional, Any, Literal
+from pydantic import BaseModel, Field, field_validator
 
-class ChatMessage(BaseModel):
-    role: str  
-    message: str
+class AppBase(BaseModel):
+    model_config = {
+        "populate_by_name": True,
+        "str_strip_whitespace": True,
+        "extra": "ignore",
+        "slots": True,
+    }
 
-class AskRequest(BaseModel):
+Role = Literal["user", "assistant", "system"]
+Stance = Literal["pro", "contra"]
+MAX_MSG_CHARS = 2000
+
+class ChatMessage(AppBase):
+    role: Role
+    content: str = Field(..., alias="message")
+
+    @field_validator("content")
+    @classmethod
+    def _limit_len(cls, v: str) -> str:
+        return (v or "")[:MAX_MSG_CHARS]
+
+class AskRequest(AppBase):
     conversation_id: Optional[str] = None
     message: str
 
-class AskResponse(BaseModel):
-    conversation_id: str
-    message: List[ChatMessage]     
-    latency_ms: int
-    stance: str
+    @field_validator("message")
+    @classmethod
+    def _limit_len(cls, v: str) -> str:
+        return (v or "")[:MAX_MSG_CHARS]
 
-class Command(BaseModel):
+class AskResponse(AppBase):
+    conversation_id: str
+    message: List[ChatMessage]
+    latency_ms: int
+    stance: Stance
+
+class Command(AppBase):
     name: str
-    method: str
+    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"]
     path: str
     description: str
     body_example: Optional[Dict[str, Any]] = None
     query_example: Optional[Dict[str, Any]] = None
 
-class CommandsResponse(BaseModel):
+class CommandsResponse(AppBase):
     commands: List[Command]
 
-class ProfileInfo(BaseModel):
+class ProfileInfo(AppBase):
     id: str
     name: str
 
-class ProfilesResponse(BaseModel):
+class ProfilesResponse(AppBase):
     profiles: List[ProfileInfo]
 
-class CreateProfileRequest(BaseModel):
-    profile_id: str  
+class CreateProfileRequest(AppBase):
+    profile_id: str
 
-class CreateProfileResponse(BaseModel):
+class CreateProfileResponse(AppBase):
     ok: bool
     conversation_id: str
     profile_id: str
 
-class HistoryResponse(BaseModel):
+class HistoryResponse(AppBase):
     conversation_id: str
     message: List[ChatMessage]
 
-class ConversationMetaResponse(BaseModel):
+class ConversationMetaResponse(AppBase):
     conversation_id: str
     profile_id: str
     profile_name: str
     topic: str
-    side: str  
+    side: str
+
+class ModelReply(AppBase):
+    stance: Stance
+    reply: str
+
+    @field_validator("reply")
+    @classmethod
+    def _reply_len(cls, v: str) -> str:
+        return (v or "")[:900]
