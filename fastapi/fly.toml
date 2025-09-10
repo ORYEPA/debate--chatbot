@@ -6,6 +6,10 @@
 app = 'debate-api'
 primary_region = 'qro'
 
+auto_stop_machines = "stop"   # o "suspend"
+auto_start_machines = false   # ← MUY importante
+min_machines_running = 0
+
 [build]
 
 [http_service]
