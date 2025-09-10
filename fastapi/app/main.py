@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.docs import configure_docs
 from app.api.v1.endpoints import router as api_v1
-from app.config import OLLAMA_BASE_URL 
+from app.config import LLM_BASE_URL
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -28,24 +28,22 @@ def create_app() -> FastAPI:
     )
 
     @app.on_event("startup")
-    def _warmup():
+    def _warmup() -> None:
         """
-        Warmup no bloqueante: si hay OLLAMA_BASE_URL, intentamos listar tags.
-        Si falla o no hay URL, no pasa nada – el fallback a OpenAI ocurre en runtime.
+        Non-blocking warmup:
+        - If LLM_BASE_URL is set and points to an Ollama-compatible endpoint,
+          we try hitting /api/tags. If it fails, we silently ignore it.
+        - If LLM_BASE_URL is empty or it's a non-Ollama provider, we skip.
         """
-        base = (OLLAMA_BASE_URL or "").rstrip("/")
+        base = (LLM_BASE_URL or "").rstrip("/")
         if not base:
             return
         try:
             requests.get(f"{base}/api/tags", timeout=3)
         except Exception:
-            
-            pass
-
+            pass  
     configure_docs(app)
-
     app.include_router(api_v1, prefix="/api/v1")
-
     return app
 
 app = create_app()
