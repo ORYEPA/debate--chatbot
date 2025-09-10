@@ -1,170 +1,147 @@
-import json
-import re
+from typing import List, Optional
+import os
 import requests
-from typing import List, Dict, Tuple, Optional
+import litellm
+from litellm.exceptions import APIConnectionError, APIError, RateLimitError, NotFoundError
 
 from app.config import (
-    UNIVERSAL_SYSTEM_PROMPT, REPLY_CHAR_LIMIT, STANCE_VALUES,
-    OLLAMA_BASE_URL, MODEL_NAME, HTTP_TIMEOUT_SECONDS, KEEP_ALIVE, NUM_PREDICT_CAP, NUM_CTX,
-    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, PROVIDER_PREFERENCE,
+    LLM_MODEL, LLM_BASE_URL, LLM_TEMPERATURE, LLM_TIMEOUT,
+    OPENAI_MODEL, OPENAI_BASE_URL, OPENAI_API_KEY, PROVIDER_PREFERENCE,
+    REPLY_CHAR_LIMIT, MAX_OUTPUT_TOKENS,
 )
-from app.models import ChatMessage, ModelReply
+from app.models import ChatMessage, ModelReply, Stance
 
-JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-def _ensure_url_scheme(u: str) -> str:
-    if not u:
-        return u
-    if u.startswith(("http://", "https://")):
-        return u.rstrip("/")
-    return ("https://" + u).rstrip("/")
-
-def _stance_hint_line(stance_hint: Optional[str]) -> str:
-    """
-    Optional hint to bias stance when ambiguous, without contradicting the JSON contract.
-    """
-    if stance_hint and stance_hint.lower() in STANCE_VALUES:
-        return (
-            f"\nStance hint: if the stance is ambiguous, prefer '{stance_hint.lower()}'. "
-            "Do not print the hint; only reflect it in the JSON value."
-        )
-    return ""
-
-def build_prompt(history: List[ChatMessage], user_msg: str, stance_hint: Optional[str]) -> str:
-    """
-    Plain prompt for Ollama-style completion models.
-    """
-    ctx = []
-    for m in history[-6:]:
-        if m.role == "user":
-            ctx.append(f"User: {m.content}")
-        elif m.role == "assistant":
-            ctx.append(f"Assistant: {m.content}")
-    return (
-        f"{UNIVERSAL_SYSTEM_PROMPT}"
-        f"{_stance_hint_line(stance_hint)}\n\n"
-        + "\n".join(ctx[-6:])
-        + f"\n\nUser: {user_msg}\n"
-        + "Respond now with the JSON object as specified."
-    )
-
-def build_messages(history: List[ChatMessage], user_msg: str, stance_hint: Optional[str]) -> List[Dict[str, str]]:
-    """
-    Chat-style messages for OpenAI.
-    """
-    sys_content = f"{UNIVERSAL_SYSTEM_PROMPT}{_stance_hint_line(stance_hint)}"
-    msgs: List[Dict[str, str]] = [{"role": "system", "content": sys_content}]
-    for m in history[-6:]:
-        if m.role in ("user", "assistant"):
-            msgs.append({"role": m.role, "content": m.content})
-    msgs.append({"role": "user", "content": user_msg + "\nRespond now with the JSON object as specified."})
-    return msgs
-
-def _extract_first_json(s: str) -> Dict:
-    m = JSON_RE.search(s or "")
-    if not m:
-        raise ValueError("Model output did not contain a JSON object.")
-    candidate = m.group(0).strip()
-    if candidate.startswith("```"):
-        candidate = candidate.strip("`").strip()
-        if candidate.lower().startswith("json"):
-            candidate = candidate[4:].strip()
-    return json.loads(candidate)
-
-NEG_CUES = ("disagree","not agree","against","oppose","opposed","en contra","discrepo","no estoy de acuerdo")
-POS_CUES = ("agree","in favor","support","apoyo","a favor","de acuerdo")
-
-def _normalize_to_modelreply(raw_text: str, stance_hint: Optional[str]) -> ModelReply:
-    data = _extract_first_json(raw_text)
-    stance = (data.get("stance","") or "").lower().strip()
-    reply  = (data.get("reply","")  or "").strip()
-
-    if stance not in STANCE_VALUES:
-        if stance_hint and stance_hint.lower() in STANCE_VALUES:
-            stance = stance_hint.lower()
-        else:
-            text = f"{reply} {raw_text}".lower()
-            if any(k in text for k in NEG_CUES):
-                stance = "contra"
-            elif any(k in text for k in POS_CUES):
-                stance = "pro"
-            else:
-                stance = "contra" if any(w in text for w in (" not ", " no ", "n't", " jamás", " nunca", " sin ")) else "pro"
-
-    if len(reply) > REPLY_CHAR_LIMIT:
-        reply = reply[:REPLY_CHAR_LIMIT].rstrip()
-
-    return ModelReply(stance=stance, reply=reply)
+if (OPENAI_API_KEY or "").strip():
+    litellm.api_key = OPENAI_API_KEY.strip()
 
 
-def _generate_with_ollama(prompt: str) -> str:
-    base = _ensure_url_scheme(OLLAMA_BASE_URL)
+def _provider_from_model(model: str) -> str:
+    """Devuelve 'ollama' si el modelo empieza con 'ollama/', si no 'openai' por defecto."""
+    return (model.split("/", 1)[0] if "/" in model else "openai").lower()
+
+
+def _normalized_openai_base() -> str:
+    """Asegura que el base URL de OpenAI termine en /v1."""
+    base = (OPENAI_BASE_URL or "https://api.openai.com").rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base
+
+
+def _api_base_for(model: str) -> Optional[str]:
+    prov = _provider_from_model(model)
+    if prov == "ollama":
+        return (LLM_BASE_URL or "").strip() or None
+    if prov == "openai":
+        return _normalized_openai_base()
+    return None
+
+
+def _ollama_up() -> bool:
+    """Ping mínimo para saber si Ollama está reachable, evitando que LiteLLM lance excepción."""
+    base = (LLM_BASE_URL or "").strip()
     if not base:
-        raise RuntimeError("OLLAMA_BASE_URL is empty.")
-    url = f"{base}/api/generate"
-    payload = {
-        "model": MODEL_NAME,
-        "prompt": prompt,
-        "options": {
-            "num_ctx": NUM_CTX,
-            "num_predict": NUM_PREDICT_CAP,  
-            "temperature": 0.45,             
-            "stop": [],
-        },
-        "keep_alive": KEEP_ALIVE,
-    }
-    r = requests.post(url, json=payload, timeout=HTTP_TIMEOUT_SECONDS)
-    r.raise_for_status()
-    j = r.json()
-    return (j.get("response") or "").strip()
-
-def _generate_with_openai(messages: List[Dict[str, str]]) -> str:
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is empty.")
-    base = _ensure_url_scheme(OPENAI_BASE_URL)
-    url = f"{base}/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": OPENAI_MODEL,
-        "messages": messages,
-        "temperature": 0.45,   
-        "max_tokens": 650,    
-        "stop": None,
-    }
-    r = requests.post(url, headers=headers, json=payload, timeout=HTTP_TIMEOUT_SECONDS)
-    r.raise_for_status()
-    j = r.json()
-    return (j["choices"][0]["message"]["content"] or "").strip()
-
-def _try_provider_ollama(history: List[ChatMessage], user_msg: str, stance_hint: Optional[str]) -> Tuple[bool, str]:
+        return False
     try:
-        return True, _generate_with_ollama(build_prompt(history, user_msg, stance_hint))
-    except Exception as e:
-        return False, f"[ollama_error] {e}"
+        r = requests.get(f"{base.rstrip('/')}/api/tags", timeout=0.8)
+        r.raise_for_status()
+        return True
+    except Exception:
+        return False
 
-def _try_provider_openai(history: List[ChatMessage], user_msg: str, stance_hint: Optional[str]) -> Tuple[bool, str]:
+
+def _extract_text(resp) -> str:
     try:
-        return True, _generate_with_openai(build_messages(history, user_msg, stance_hint))
-    except Exception as e:
-        return False, f"[openai_error] {e}"
+        text = resp.choices[0].message["content"]
+    except Exception:
+        text = getattr(resp, "choices", [{}])[0].get("message", {}).get("content", "") or ""
+    if REPLY_CHAR_LIMIT and REPLY_CHAR_LIMIT > 0:
+        text = text[:REPLY_CHAR_LIMIT]
+    return text
 
-def generate_reply(history: List[ChatMessage], user_msg: str, stance_hint: Optional[str] = None) -> ModelReply:
-    """
-    Keep the same public API your endpoint expects, now with optional stance_hint.
-    Returns ModelReply(stance='pro'|'contra', reply=str).
-    """
-    providers = (
-        (_try_provider_ollama, _try_provider_openai)
-        if PROVIDER_PREFERENCE == "ollama_first"
-        else (_try_provider_openai, _try_provider_ollama)
+
+class LLMClient:
+    def __init__(self, model: str = LLM_MODEL, temperature: float = LLM_TEMPERATURE, timeout: float = LLM_TIMEOUT):
+        self.model = model
+        self.temperature = temperature
+        self.timeout = timeout
+
+    def _try_completion(self, model: str, messages: List[ChatMessage], max_tokens: Optional[int]) -> str:
+        payload = [{"role": m.role, "content": m.message} for m in messages]
+        kwargs = dict(
+            model=model,
+            messages=payload,
+            temperature=self.temperature,
+            timeout=self.timeout,
+        )
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        elif MAX_OUTPUT_TOKENS and MAX_OUTPUT_TOKENS > 0:
+            kwargs["max_tokens"] = MAX_OUTPUT_TOKENS
+
+        api_base = _api_base_for(model)
+        if api_base:
+            kwargs["api_base"] = api_base 
+
+        resp = litellm.completion(**kwargs)
+        return _extract_text(resp)
+
+    def chat(self, messages: List[ChatMessage], max_tokens: Optional[int] = None) -> str:
+        pref = (PROVIDER_PREFERENCE or "").lower()
+        primary = self.model
+        secondary = (OPENAI_MODEL or "gpt-4o-mini").strip()
+
+        if pref == "openai_first":
+            order = [secondary, primary]
+        elif pref == "openai_only":
+            order = [secondary]
+        elif pref == "ollama_only":
+            order = [primary]
+        else:
+            order = [primary, secondary]
+
+        ollama_ok = _ollama_up()
+        filtered_order: List[str] = []
+        for m in order:
+            prov = _provider_from_model(m)
+            if prov == "ollama" and not ollama_ok:
+                continue
+            if prov == "openai" and not (OPENAI_API_KEY or "").strip():
+                continue
+            filtered_order.append(m)
+
+        if not filtered_order:
+            raise RuntimeError("No hay proveedores LLM disponibles (Ollama no reachable y/o falta OPENAI_API_KEY).")
+
+        last_exc: Optional[Exception] = None
+        for model in filtered_order:
+            try:
+                return self._try_completion(model, messages, max_tokens)
+            except (APIConnectionError, APIError, RateLimitError, NotFoundError, Exception) as e:
+                last_exc = e
+                continue
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("No provider available for completion")
+
+
+def generate_reply(history: List[ChatMessage], user_text: str, stance_hint: Stance) -> ModelReply:
+    stance_upper = "PRO" if stance_hint == "pro" else "CON"
+    system = ChatMessage(
+        role="system",
+        message=(
+            f"You are a DEBATE chatbot. Hold a {stance_upper} stance on the current topic under discussion.\n"
+            "Rules:\n"
+            "1) Keep your stance consistently; do not switch sides.\n"
+            "2) Structure: short thesis, 2–4 reasons (bullets), short conclusion. Avoid fallacies.\n"
+            "3) Stay on topic. If the user wants a different topic, ask them to start a new conversation.\n"
+            "4) Be direct (about 180–220 words)."
+        ),
     )
+    trimmed = history[-10:] if len(history) > 10 else history
+    messages = [system] + trimmed + [ChatMessage(role="user", message=user_text)]
 
-    errors: List[str] = []   
-
-    for fn in providers:
-        ok, raw = fn(history, user_msg, stance_hint)
-        if ok:
-            return _normalize_to_modelreply(raw, stance_hint)
-        errors.append(raw)
-
-    raise RuntimeError("All providers failed. Details: " + " | ".join(errors))
+    llm = LLMClient()
+    reply_text = llm.chat(messages)
+    return ModelReply(stance=stance_hint, reply=reply_text[: (REPLY_CHAR_LIMIT or 10_000)])

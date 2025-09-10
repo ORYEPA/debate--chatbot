@@ -1,3 +1,6 @@
+import os
+MAX_MSG_CHARS = int(os.getenv("MAX_MSG_CHARS", "8000"))
+
 from typing import List, Dict, Optional, Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
@@ -11,16 +14,16 @@ class AppBase(BaseModel):
 
 Role = Literal["user", "assistant", "system"]
 Stance = Literal["pro", "contra"]
-MAX_MSG_CHARS = 2000
 
 class ChatMessage(AppBase):
-    role: Role
-    content: str = Field(..., alias="message")
+    role: Literal["system", "user", "assistant"]
+    message: str = ""
 
-    @field_validator("content")
+    @field_validator("message", mode="before")
     @classmethod
-    def _limit_len(cls, v: str) -> str:
-        return (v or "")[:MAX_MSG_CHARS]
+    def _limit_len(cls, v):
+        v = v or ""
+        return v[:MAX_MSG_CHARS]
 
 class AskRequest(AppBase):
     conversation_id: Optional[str] = None

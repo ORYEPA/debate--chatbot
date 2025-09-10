@@ -11,6 +11,8 @@ from app.config import (
     OLLAMA_BASE_URL,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
+    USER_MSG_LIMIT, 
+    HISTORY_MAX_MSGS,
     redis_client,
 )
 from app.models import (
@@ -253,7 +255,7 @@ def ask(req: AskRequest):
         conv["meta"]["user_aligned"] = True
         save_conversation(cid, conv)
 
-    user_text = user_text[:800]
+    user_text = user_text[:USER_MSG_LIMIT]
     history.append(ChatMessage(role="user", message=user_text))
 
     stance_hint = "pro" if meta.get("stance_type") == "affirmative" else "contra"
