@@ -13,6 +13,7 @@ from app.config import (
 )
 from .llm import LLMClient
 from .classifier import IntentLayer, UserStanceDetector
+from app.services.intent import IntentLayer
 
 
 
