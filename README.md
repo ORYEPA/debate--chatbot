@@ -1,8 +1,8 @@
-## Debate Chatbot
+# Debate Chatbot
 
 Servicio API que mantiene conversaciones de debate. Define un **topic** en el primer mensaje (sin `conversation_id`) y, a partir de ahí, **se mantiene en la postura inicial** para convencer a la otra parte.
 
-📄 **Documentación interactiva del API (Swagger UI):** [https://debate-api.fly.dev/docs](https://debate-api.fly.dev/docs)
+📄 **Documentación interactiva del API (Swagger UI):** [https://debate-api.fly.dev/docs](https://debate-chatbot-piqd.onrender.com/docs
 
 ---
 
@@ -25,7 +25,22 @@ Cliente (curl / App / Postman)
   Lógica de conversación (memoria corta, reglas)
 ```
 
-> **Tolerancia a fallas:** El backend intenta primero **Ollama**. Si no responde (p. ej. fuera de servicio o timeout), **hace failover automático a OpenAI** siempre que exista `OPENAI_API_KEY` configurada. El endpoint **/health** indica la base LLM preferida y cuál está activa.
+### Capas de IA (resumen)
+
+1) **Clasificación de tema y postura**  
+   - Extrae el **tema central** del primer mensaje y determina si el usuario está **a favor** o **en contra**.  
+   
+
+2) **Clasificador de intención**  
+   - Decide si el mensaje **cambia de tema**, **sigue el tema**, es un **saludo**, **chit-chat** o **inseguro** (`unsafe`).  
+   - Permite controlar flujo: mantener el hilo, pedir abrir una nueva conversación o bloquear contenido.
+
+3) **Generación de respuesta**  
+   - Produce la réplica del asistente manteniendo **la postura inicial** (no cambia de lado).  
+   - Estructura: **tesis breve → 2-4 razones en viñetas → cierre corto**; evita falacias y se mantiene en tema.  
+   - Respeta límites como `REPLY_CHAR_LIMIT` y contexto `NUM_CTX`.
+
+> **Ejecución y tolerancia a fallas:** cada capa intenta primero **Ollama**; si hay timeout o caída, hace **fallback automático a OpenAI** (si `OPENAI_API_KEY` está configurada). Los prompts internos se formulan en **inglés**.
 
 * **/health**: estado del servicio y base LLM.
 * **/ask** (POST): `{ conversation_id, message }` 
@@ -294,7 +309,23 @@ curl -s -X POST http://localhost:8000/ask \
 
 ---
 
-## 6) Resolución de problemas (FAQ)
+## 6) ¿Cuántas llamadas a la IA por conversación?
+
+En el **primer mensaje** de una conversación (sin `conversation_id`) se ejecutan **2 llamadas**:
+
+1. **Clasificación de tema y postura** – para fijar `{topic, side}`.  
+2. **Generación de respuesta** – el bot responde ya con la postura fijada.
+
+En **cada mensaje subsecuente** se ejecutan **2 llamadas**:
+
+1. **Clasificador de intención** – decide: `topic_change`, `continue_topic`, `greeting`, `chit_chat`, `unsafe`.  
+2. **Generación de respuesta** – redacta la réplica siguiendo la postura inicial.
+
+> **Costos y control:** Ajusta `REPLY_CHAR_LIMIT`, `NUM_PREDICT_CAP` y `NUM_CTX` para limitar tokens. Si **Ollama** falla, hay **failover** a **OpenAI** (si `OPENAI_API_KEY` existe).
+
+---
+
+## 7) Resolución de problemas (FAQ)
 
 * **`could_not_reach_ollama` / timeouts**: verifica `OLLAMA_BASE_URL` y que el servidor LLM esté activo; si además configuraste `OPENAI_API_KEY`, el backend hará **fallback** a **OpenAI** de forma automática.
 * **`docker compose` no existe**: usa `docker-compose` clásico o actualiza Docker Desktop; el Makefile detecta ambas variantes.
@@ -304,14 +335,14 @@ curl -s -X POST http://localhost:8000/ask \
 
 ---
 
-## 7) Estándares de código
+## 8) Estándares de código
 
 * **Formateo**: puedes usar *black* y *ruff* (opcional).
 * **Tests**: *pytest* en `app/tests`.
 
 ---
 
-## 8) Seguridad y despliegue
+## 9) Seguridad y despliegue
 
 * No expongas la API pública sin autenticación si usas modelos locales o proveedores de pago.
 * Valida límites (`REPLY_CHAR_LIMIT`, `NUM_PREDICT_CAP`).
