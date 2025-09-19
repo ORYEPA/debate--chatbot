@@ -2,7 +2,7 @@
 
 Servicio API que mantiene conversaciones de debate. Define un **topic** en el primer mensaje (sin `conversation_id`) y, a partir de ahí, **se mantiene en la postura inicial** para convencer a la otra parte.
 
-📄 **Documentación interactiva del API (Swagger UI):** [https://debate-api.fly.dev/docs](https://debate-chatbot-piqd.onrender.com/docs
+📄 **Documentación interactiva del API (Swagger UI):** https://debate-chatbot-piqd.onrender.com/docs
 
 ---
 
